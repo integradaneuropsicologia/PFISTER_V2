@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <title>Pirâmide Pfister</title>
+  <style>
+    :root{
+      --cell-size: 86px;
+      --bg:#f7f7fb; --ink:#1f2937; --muted:#6b7280; --card:#ffffff; --brand:#2563eb;
+      --cell:#eef2ff; --cell-hover:#e5e7ff;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; background:var(--bg); color:var(--ink)}
+
+    /* Esconde toda a UI até a validação do token concluir */
+    body:not(.ok) header,
+    body:not(.ok) main,
+    body:not(.ok) .modal-backdrop { display:none !important; }
+
+    header{position:sticky;top:0;z-index:10;background:var(--card); border-bottom:1px solid #c7cacf}
+    .wrap{max-width:1100px;margin:0 auto;padding:14px 18px}
+    h1{font-size:18px;margin:0}
+
+    /* Layout principal: paleta lateral + pirâmide */
+    .workarea{ display:grid; grid-template-columns: 220px 1fr; gap:14px; align-items:start; }
+    @media (max-width: 720px){ .workarea{ grid-template-columns: 1fr; } }
+
+    .sidebar{ position: sticky; top:64px; align-self:start; display:flex; flex-direction:column; gap:12px }
+    .card{background:var(--card); border:1px solid #e5e7eb; border-radius:14px; padding:14px}
+
+    /* Paleta lateral */
+    .palette-side{ display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start }
+    .chip{width:32px; height:32px; border-radius:8px; border:1px solid rgba(0,0,0,.08); cursor:grab; flex:0 0 auto}
+    .chip[draggable="true"]:active{cursor:grabbing}
+
+    /* Pirâmide */
+    .board{display:flex; flex-direction:column; gap:10px}
+    .board h4{margin:0; font-size:15px; color:var(--muted)}
+    .mini{display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted)}
+    .mini .dot{width:10px; height:10px; border-radius:999px; background:#e5e7eb}
+
+    .pyramid{display:flex; flex-direction:column; align-items:center; gap:0; padding:14px; border:0.5px dashed #e5e7eb; border-radius:8px; background:#fff;}
+    .row-cells{display:flex; gap:0}
+    .cell{
+      width:var(--cell-size); height:var(--cell-size);
+      border:0.2px solid #e5e7eb;
+      background:var(--cell);
+      border-radius:2px;
+      position:relative;
+      transition:transform .08s;
+    }
+    .cell.drag-over{ outline:2px solid var(--cell-hover); outline-offset:-2px; transform:scale(1.02) }
+    .cell .placed{ position:absolute; inset:0; border:0.5px solid #e5e7eb; border-radius:2px; cursor:grab; }
+    .cell .placed:active{ cursor:grabbing }
+
+    .analysis{margin-top:8px; font-size:12px; color:var(--muted)}
+    .analysis b{color:#111}
+
+    @media (max-width:520px){ :root{ --cell-size: 56px; } }
+
+    /* Lixeira */
+    .trash{ background:#fff; border:2px dashed #e5e7eb; border-radius:12px; padding:12px; text-align:center }
+    .trash.over{ border-color:#94a3b8; background:#f8fafc }
+
+    /* Modal resumo */
+    .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:50 }
+    .modal{ background:#fff; border-radius:14px; padding:18px; width:min(780px, 94vw); border:1px solid #e5e7eb }
+    .modal h3{ margin:0 0 10px; font-size:18px }
+    .modal .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:12px }
+    .modal .row{ font-size:14px; padding:8px; border:1px solid #eef2f7; border-radius:10px }
+    .modal .actions{ margin-top:12px; display:flex; justify-content:space-between; gap:8px; align-items:center; flex-wrap:wrap }
+    .small{font-size:12px; color:var(--muted)}
+
+    .btn{appearance:none; border:1px solid #e5e7eb; background:#fff; color:#111; border-radius:12px; padding:10px 14px; font-size:14px; cursor:pointer}
+    .btn.primary{background:linear-gradient(180deg,#2b6ef3,#2252c9); color:#fff; border-color:#1d4ed8; box-shadow:0 6px 16px rgba(37,99,235,.22); padding:12px 18px; font-weight:600}
+    .btn.primary#nextBoard{font-size:15px; letter-spacing:.2px; border-radius:14px}
+    .btn.primary#nextBoard.pulse{animation:pulse 1.2s ease-in-out infinite}
+    @keyframes pulse{0%{transform:translateZ(0) scale(1)}50%{transform:translateZ(0) scale(1.015)}100%{transform:translateZ(0) scale(1)}}
+    .msg{margin:10px 0;padding:10px;border-radius:8px;font-size:14px}
+    .okbox{background:#ecfdf5;border:1px solid #86efac;color:#065f46}
+    .errbox{background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d}
+    .warnbox{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+    .btn[disabled]{ opacity:.55; cursor:not-allowed; filter:grayscale(.2); }
+    #alert { display:none; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap" style="display:flex; align-items:center; gap:16px; justify-content:space-between">
+    <h1>Pirâmide Pfister</h1>
+    <div class="toolbar" aria-label="Navegação">
+      <button class="btn primary" id="nextBoard" disabled>Próxima pirâmide</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap" style="padding-top:14px">
+  <div id="alert" class="msg" style="display:none"></div>
+  <div id="sendStatus" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
+</div>
+
+<main class="wrap" style="padding-top:14px; padding-bottom:32px">
+  <section class="workarea">
+    <!-- Lateral: paleta + lixeira -->
+    <aside class="sidebar">
+      <div class="card">
+        <h3 style="margin:0 0 8px; font-size:14px">Cores (arraste para a pirâmide)</h3>
+        <div class="palette-side" id="paletteSide" aria-label="Paleta de cores"></div>
+      </div>
+      <div class="card trash" id="trash" aria-label="Lixeira">
+        <strong>Remover cor</strong>
+        <div style="font-size:12px; color:var(--muted)">Arraste o bloco aqui para excluir</div>
+      </div>
+    </aside>
+
+    <!-- Conteúdo: pirâmide -->
+    <section class="card" style="min-width:0">
+      <div class="board">
+        <h4 id="boardTitle" aria-live="polite">
+          Pirâmide <span id="boardIndex">1</span>
+          <span class="mini"><span class="dot" id="dot"></span><span id="filled">0</span>/15</span>
+        </h4>
+        <div class="pyramid" id="pyramid" aria-label="Pirâmide ativa"></div>
+        <div class="analysis" id="analysis"></div>
+      </div>
+    </section>
+  </section>
+</main>
+
+
+
+<script>
+/*************************************
+ * PFISTER (TPC) — ETAPA 1 (versão clínica)
+ *************************************/
+const $ = s => document.querySelector(s);
+const $$ = sel => document.querySelectorAll(sel);
+const qs = k => new URLSearchParams(location.search).get(k) || "";
+const onlyDigits = s => (s||"").replace(/\D+/g,"");
+
+function setBox(sel, text, kind="ok"){
+  const el = document.querySelector(sel); if(!el) return;
+  el.textContent = text;
+  el.className = "msg " + (kind==="ok" ? "okbox" : kind==="warn" ? "warnbox" : "errbox");
+  el.style.display = "block";
+}
+function hideBox(sel){
+  const el = document.querySelector(sel); if(el){ el.style.display="none"; el.textContent=""; }
+}
+
+const SUPABASE_URL = "https://ydypdeafbcdcamwigjuq.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_lg9teAniku65cd2dnZJvIQ_Zii0XneZ";
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const TEST_CODE_FIXO = "PFISTER_V2";
+const STORAGE_BUCKET = "test-images";
+const AREA_PACIENTE_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
+
+/* guarda rascunho (stub) */
+function saveDraft(){ /* no-op */ }
+
+async function GET(url){ const r=await fetch(url); if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }
+
+
+
+/* ---------------- Estado principal ---------------- */
+let patient = null, CPF = "";
+let resultsSent = false;
+let imagesShared = false;
+
+const SHOW_LIVE_ANALYSIS = false;
+const FIXED_PALETTE = [
+  { key:'branco',  label:'Branco',  shades:['#FFFFFF'] },
+  { key:'preto',   label:'Preto',   shades:['#000000'] },
+  { key:'cinza',   label:'Cinza',   shades:['#75787b'] },
+  { key:'azul',    label:'Azul',    shades:['#9bcbeb','hsl(186, 100%, 27%)','#007dba','#002d72'] },
+  { key:'violeta', label:'Violeta', shades:['#ad96dc','#8a1b61','#5e366e'] },
+  { key:'vermelho',label:'Vermelho',shades:['#f67599','#d50032','#ab2328','#802f2d'] },
+  { key:'laranja', label:'Laranja', shades:['#ff8f1c','#fe5000'] },
+  { key:'amarelo', label:'Amarelo', shades:['#f7ea48','#ffb500'] },
+  { key:'marrom',  label:'Marrom',  shades:['#864a33','#4f2c1d'] },
+  { key:'verde',   label:'Verde',   shades:['#c4d600','#43b02a','#009639','#22372b'] }
+];
+
+let PALETTE = FIXED_PALETTE;
+let activeBoard = +(localStorage.getItem('pfister_active_board') || '1'); // 1..3
+let BOARDS_STATE = {1:{cells:[]}, 2:{cells:[]}, 3:{cells:[]}};
+let boardSeq = {1:[],2:[],3:[]};
+let boardStep = {1:0,2:0,3:0};
+
+/* ---------------- Utils ---------------- */
+function safeParse(s){ try{ return JSON.parse(s); }catch(_){ return null; } }
+function shuffle2(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+const rowsIdx = [1,2,3,4,5];
+const letters = ['A','B','C','D','E'];
+const slotLabel = (r,c)=> `${r}${letters[c-1]}`;
+
+function combinedFileName(){
+  const nome = (patient?.nome || patient?.name || patient?.nome_completo || "Paciente").toString().trim();
+  const cpfStr = (patient?.cpf || CPF || "").toString().replace(/\D+/g,"");
+  const safe = (nome + " - CPF " + cpfStr)
+    .replace(/[\\/:*?"<>|#%]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  return safe + ".png";
+}
+/* ---------------- Paleta ---------------- */
+function buildPaletteSide(){
+  const box = $('#paletteSide'); if(!box) return;
+  box.innerHTML='';
+  const flat = [];
+  PALETTE.forEach(group=> group.shades.forEach((hex,i)=> flat.push({key:group.key,label:group.label,hex,shadeIndex:i})));
+  const shuffled = shuffle2(flat);
+  shuffled.forEach(item=>{
+    const chip = document.createElement('div');
+    chip.className='chip';
+    chip.draggable = true;
+    chip.style.background = item.hex;
+    chip.dataset.key = item.key;
+    chip.dataset.label = item.label;
+    chip.dataset.hex = item.hex;
+    chip.dataset.shadeIndex = String(item.shadeIndex);
+    chip.title = item.label;
+    chip.setAttribute('aria-label', `${item.label} tom ${item.shadeIndex+1}`);
+    chip.addEventListener('dragstart', e=>{
+      const payload = { type:'palette-chip', key:item.key, label:item.label, hex:item.hex, shadeIndex:item.shadeIndex };
+      e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+      e.dataTransfer.setData('text', JSON.stringify(payload));
+      e.dataTransfer.effectAllowed = 'copyMove';
+    });
+    box.appendChild(chip);
+  });
+}
+
+/* ---------------- DnD núcleo ---------------- */
+function enableDrop(el){
+  el.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('drag-over'); });
+  el.addEventListener('dragleave', ()=> el.classList.remove('drag-over'));
+  el.addEventListener('drop', e=>{
+    e.preventDefault(); el.classList.remove('drag-over');
+    let data = null; const txt = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text');
+    try{ data = JSON.parse(txt); }catch(_){ }
+    const idFallback = e.dataTransfer.getData('text/id') || e.dataTransfer.getData('text');
+
+    if(data && data.type==='palette-chip'){
+      if(el.querySelector('.placed')) return;
+      placeChip(el, data.hex, data.key, data.label, data.shadeIndex);
+      return;
+    }
+    let fromEl = null;
+    if(data && data.type==='placed-chip' && data.fromId){ fromEl = document.getElementById(data.fromId); }
+    else if(idFallback){ const maybe = document.getElementById(idFallback); if(maybe && maybe.classList.contains('placed')) fromEl = maybe; }
+    if(!fromEl) return;
+
+    const toCell   = el; const fromCell = fromEl.parentElement; if(toCell === fromCell) return;
+    const b = activeBoard;
+    if(!toCell.querySelector('.placed')){
+      toCell.appendChild(fromEl);
+      boardStep[b] += 1; fromEl.dataset.step = String(boardStep[b]);
+      const [r,c] = toCell.dataset.slot.split('-').map(Number);
+      boardSeq[b].push({step:boardStep[b], row:r, col:c, label:slotLabel(r,c), color:fromEl.dataset.key, shade:+fromEl.dataset.shadeIndex, hex:fromEl.dataset.hex, move:true});
+    } else {
+      const targetEl = toCell.querySelector('.placed');
+      const [rTo,cTo]   = toCell.dataset.slot.split('-').map(Number);
+      toCell.appendChild(fromEl); fromCell.appendChild(targetEl);
+      boardStep[b] += 1; fromEl.dataset.step = String(boardStep[b]);
+      boardSeq[b].push({step:boardStep[b], row:rTo, col:cTo, label:slotLabel(rTo,cTo), color:fromEl.dataset.key, shade:+fromEl.dataset.shadeIndex, hex:fromEl.dataset.hex, swap:true});
+    }
+    captureActiveBoard(); updateCounts(); saveDraft(false); renderAnalysisActive();
+  });
+}
+
+function placeChip(cell, hex, key, label, shadeIndex, step=null, silent=false){
+  const div = document.createElement('div');
+  div.className='placed';
+  div.style.background = hex;
+  const uid = `pl-${Math.random().toString(36).slice(2,9)}`; div.id = uid; div.draggable = true;
+  div.dataset.hex = hex; div.dataset.key = key; div.dataset.label = label; div.dataset.shadeIndex = shadeIndex;
+  const b = activeBoard;
+  if(!silent){ boardStep[b]+=1; div.dataset.step = String(boardStep[b]); }
+  else { div.dataset.step = String(step ?? 999); }
+  const [r,c] = cell.dataset.slot.split('-').map(Number);
+  if(!silent){ boardSeq[b].push({step:boardStep[b], row:r, col:c, label:slotLabel(r,c), color:key, shade:+shadeIndex, hex}); }
+  div.addEventListener('dragstart', e=>{
+    const payload = { type:'placed-chip', fromId: uid };
+    e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+    e.dataTransfer.setData('text', JSON.stringify(payload));
+    e.dataTransfer.setData('text/id', uid);
+    e.dataTransfer.dropEffect = 'move'; e.dataTransfer.effectAllowed = 'move';
+  });
+  cell.appendChild(div);
+  captureActiveBoard(); updateCounts(); saveDraft(false); renderAnalysisActive(); updateNavVisibility();
+}
+
+function captureActiveBoard(){
+  const cells=[];
+  const pyrCells = document.querySelectorAll('.pyramid .cell');
+  if(!pyrCells || !pyrCells.length){ BOARDS_STATE[activeBoard] = { cells: [] }; return; }
+  pyrCells.forEach(cell=>{
+    const placed = cell.querySelector('.placed');
+    if(placed){ cells.push({ slot: cell.dataset.slot, key: placed.dataset.key, label: placed.dataset.label, hex: placed.dataset.hex, shadeIndex: Number(placed.dataset.shadeIndex), step: Number(placed.dataset.step||999) }); }
+  });
+  BOARDS_STATE[activeBoard] = { cells };
+}
+
+function enableTrash(){
+  const trash = document.getElementById('trash'); if(!trash) return;
+  const allow = (e)=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; trash.classList.add('over'); };
+  trash.addEventListener('dragenter', allow);
+  trash.addEventListener('dragover',  allow);
+  trash.addEventListener('dragleave', ()=> trash.classList.remove('over'));
+  trash.addEventListener('drop', (e)=>{
+    e.preventDefault(); trash.classList.remove('over');
+    let data = null; const txt = e.dataTransfer.getData('text/plain'); try{ data = JSON.parse(txt); }catch(_){ }
+    const idFallback = e.dataTransfer.getData('text/id') || e.dataTransfer.getData('text');
+    let el = null;
+    if(data && data.type==='placed-chip' && data.fromId){ el = document.getElementById(data.fromId); }
+    else if(idFallback){ const maybe = document.getElementById(idFallback); if(maybe && maybe.classList.contains('placed')) el = maybe; }
+    if(el){ el.remove(); captureActiveBoard(); updateCounts(); saveDraft(false); renderAnalysisActive(); updateNavVisibility(); }
+  });
+}
+
+/* ---------------- Responsivo ---------------- */
+const debounce = (fn, ms=120) => { let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); }; };
+function setCellSize(){
+  const pyr = document.querySelector('#pyramid'); if(!pyr) return;
+  const w = pyr.clientWidth || pyr.getBoundingClientRect().width || 430;
+  const sizeByWidth = Math.max(40, Math.floor((w - 8) / 5));
+  const header = document.querySelector('header');
+  const headerH = header ? header.offsetHeight : 0;
+  const reserved = headerH + 64;
+  const maxH = Math.max(220, window.innerHeight - reserved);
+  const sizeByHeight = Math.max(40, Math.floor((maxH - 28) / 5));
+  const size = Math.min(sizeByWidth, sizeByHeight);
+  document.documentElement.style.setProperty('--cell-size', size + 'px');
+}
+window.addEventListener('resize', debounce(setCellSize, 80));
+window.addEventListener('orientationchange', debounce(setCellSize, 120));
+
+/* ---------------- Contadores & Navegação ---------------- */
+function boardFilledCount(n){ return (BOARDS_STATE[n]?.cells?.length)||0; }
+function isBoardComplete(n){ return boardFilledCount(n)===15; }
+function allBoardsComplete(){ return isBoardComplete(1)&&isBoardComplete(2)&&isBoardComplete(3); }
+function firstIncompleteBoard(){ for(let i=1;i<=3;i++){ if(!isBoardComplete(i)) return i; } return 3; }
+function enforceActiveBoardProgression(){
+  const target = firstIncompleteBoard();
+  if(activeBoard>target){ activeBoard = target; localStorage.setItem('pfister_active_board', String(activeBoard)); }
+}
+
+function updateCounts(){
+  const filled = boardFilledCount(activeBoard);
+  const filledEl = $('#filled');
+if (filledEl) filledEl.textContent = filled;
+
+  const dot = $('#dot');
+  if(dot){
+    const ratio = filled/15;
+    dot.style.background = ratio===1 ? '#22c55e' : (ratio>=0.5 ? '#f59e0b' : '#e5e7eb');
+  }
+}
+
+function updateNavVisibility(){
+  const btn = document.querySelector('#nextBoard');
+  if(!btn) return;
+
+  btn.style.display = 'inline-block';
+
+  const canAdvance = (activeBoard < 3) && isBoardComplete(activeBoard);
+  const canFinish  = (activeBoard === 3) && allBoardsComplete();
+
+  btn.textContent = (activeBoard < 3)
+    ? `Próxima pirâmide (${activeBoard+1}/3)`
+    : 'Concluir';
+
+  btn.disabled = (activeBoard < 3) ? !canAdvance : !canFinish;
+  btn.classList.toggle('pulse', !btn.disabled);
+}
+
+function goBoard(n){
+  activeBoard = Math.min(3, Math.max(1, n));
+  localStorage.setItem('pfister_active_board', String(activeBoard));
+  buildActivePyramid();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+/* ---------------- Análise (grid + heurísticas) ---------------- */
+function buildGridFromBoard(n){
+  const grid = rowsIdx.map(r=> Array.from({length:r},()=>null));
+  (BOARDS_STATE[n]?.cells||[]).forEach(c=>{ const [r,c2] = c.slot.split('-').map(Number); grid[r-1][c2-1] = {color:c.key, shade:c.shadeIndex, hex:c.hex, step:c.step}; });
+  return grid;
+}
+function symmetryScore(grid){ let tot=0, ok=0; grid.forEach((row)=>{ const n=row.length; for(let c=0;c<Math.floor(n/2);c++){ tot++; const a=row[c], b=row[n-1-c]; if(a&&b&&a.color===b.color) ok++; } }); return tot? ok/tot : 0; }
+function layersByColorRatio(grid){ let ok=0; grid.forEach(row=>{ if(row.every(x=> x && row[0] && x.color===row[0].color)) ok++; }); return ok/5; }
+function isAlternatedPattern(grid){
+  const colors = new Set(); grid.forEach(r=> r.forEach(x=>{ if(x) colors.add(x?.color); })); if(colors.size!==2) return false;
+  let okRows=0; grid.forEach(row=>{ const seq=row.map(x=> x? x.color : null); let alt=true; for(let i=1;i<seq.length;i++){ if(!seq[i]||!seq[i-1]||seq[i]===seq[i-1]) { alt=false; break; } } if(alt) okRows++; });
+  return okRows>=3;
+}
+function isEscada(grid){ for(let r=1;r<=3;r++){ for(let c=1;c<=r;c++){ const a=grid[r-1][c-1]; const b=grid[r][c-1]; const d=grid[r][c]; if(a&&b&&d&&a.color===b.color&&a.color===d.color) return true; } } return false; }
+function detectMantoByColors(grid){
+  const perim=[]; for(let c=1;c<=5;c++) perim.push([5,c]); perim.push([4,1],[4,4],[3,1],[3,3],[2,1],[2,2],[1,1]);
+  const inside=[]; for(let r=3;r<=5;r++){ for(let c=1;c<=r;c++){ const isEdge=(c===1||c===r||r===5); if(!isEdge) inside.push([r,c]); } }
+  const pv = perim.map(([r,c])=> grid[r-1][c-1]).filter(Boolean); const iv = inside.map(([r,c])=> grid[r-1][c-1]).filter(Boolean);
+  if(pv.length!==perim.length || iv.length!==inside.length) return null;
+  const pColor=pv[0].color, iColor=iv[0].color; const perimOk=pv.every(v=>v.color===pColor), insideOk=iv.every(v=>v.color===iColor);
+  if(!perimOk||!insideOk||pColor===iColor) return null; const top = grid[0][0]; const tipo = (top && top.color===pColor) ? 'manto fechado' : 'manto aberto';
+  return {tipo, perim:pColor, miolo:iColor};
+}
+function whiteStats(grid){ const whites=[]; grid.forEach((row,ri)=>{ row.forEach((x,ci)=>{ if(x && (x.color==='branco' || (x.hex||'').toLowerCase()==='#ffffff')) whites.push([ri+1,ci+1]); }); }); return {count:whites.length, coords:whites}; }
+function rowsSymAvg(grid){ const ratios = grid.map(row=>{ const n=row.length; let tot=0, ok=0; for(let c=0;c<Math.floor(n/2);c++){ const a=row[c], b=row[n-1-c]; if(a&&b){ tot++; if(a.color===b.color) ok++; } } return tot? ok/tot : 0; }).filter(v=>!Number.isNaN(v)); if(!ratios.length) return 0; return ratios.reduce((a,b)=>a+b,0)/ratios.length; }
+function decideAspect(grid){
+  const symG = symmetryScore(grid);
+  const symRows = rowsSymAvg(grid);
+  const layersRatio = layersByColorRatio(grid);
+  const alt = isAlternatedPattern(grid);
+  const escada = isEscada(grid);
+  const manto = detectMantoByColors(grid);
+  const w = whiteStats(grid);
+  function darknessNorm2(piece){
+    const meta={branco:1,preto:4,cinza:2,azul:3,violeta:3,vermelho:3,laranja:2,amarelo:1,marrom:3,verde:3};
+    const scale = meta[piece.color]||2; return (piece.shade??0)/Math.max(1,scale-1);
+  }
+  let leftDark=0,rightDark=0; grid.forEach((row)=>{ const mid=Math.ceil(row.length/2); row.forEach((x,ci)=>{ if(!x) return; const d=darknessNorm2(x); if(ci+1<=mid) leftDark+=d; else rightDark+=d; }); });
+  const darkImbalance = Math.abs(leftDark-rightDark);
+
+  if(manto){ return {best:{group:'Estrutura', subtype:'em manto'}}; }
+  if(symG>=0.9 || escada){ return {best:{group:'Estrutura', subtype:'simétrica'}}; }
+  if(!manto && symG>=0.30 && symG<=0.75 && layersRatio<0.8){ return {best:{group:'Estrutura', subtype:'assimétrica dinâmica'}}; }
+  if(!manto && symG<0.9 && layersRatio<0.8 && !alt){ return {best:{group:'Estrutura', subtype:'em mosaico'}}; }
+  if(layersRatio>=0.80){ return {best:{group:'Formação', subtype:'em camadas'}}; }
+  if(alt){ return {best:{group:'Formação', subtype:'alternada'}}; }
+  if(symRows>=0.85){ return {best:{group:'Formação', subtype:'simétrica'}}; }
+  if(w.count>=1){ return {best:{group:'Tapete', subtype:'furado/rasgado'}}; }
+  if(darkImbalance>=2.0){ return {best:{group:'Tapete', subtype:'desequilibrado'}}; }
+  if(symG>0.25 || symRows>0.4 || layersRatio>0.3){ return {best:{group:'Tapete', subtype:'início de ordem'}}; }
+  return {best:{group:'Tapete', subtype:'puro'}};
+}
+
+function analyzePlacementForBoard(n){
+  const grid = buildGridFromBoard(n);
+  const asp = decideAspect(grid).best;
+  const seq = (boardSeq[n]||[]).slice().sort((a,b)=> a.step-b.step);
+
+  function verticalBySecond(s){
+    if(s.length<2) return 'Mista';
+    const first = s[0];
+    let second = null;
+    for(let i=1;i<s.length;i++){ if(s[i].row!==first.row){ second = s[i]; break; } }
+    if(!second) return 'Mista';
+    if(second.row>first.row) return 'Descendente';
+    if(second.row<first.row) return 'Ascendente';
+    return 'Mista';
+  }
+  const vertical = verticalBySecond(seq);
+
+  let dirLR=0, dirRL=0;
+  for(let i=1;i<seq.length;i++){
+    const a=seq[i-1], b=seq[i];
+    if(a.row===b.row){ if(b.col>a.col) dirLR++; else if(b.col<a.col) dirRL++; }
+  }
+  let horizontal='Mista';
+  const totalMoves = dirLR + dirRL;
+  if(totalMoves>0){
+    const pctLR = dirLR/totalMoves, pctRL = dirRL/totalMoves;
+    if(pctLR>0.5) horizontal='Direta';
+    else if(pctRL>0.5) horizontal='Inversa';
+    else horizontal='Alternada';
+  }
+
+  function countExtremeConsecutivePairs(s){
+    let hits=0;
+    [3,4,5].forEach(r=>{
+      let cols=[];
+      s.forEach((p,idx)=>{ if(p.row===r && (p.col===1 || p.col===r)){ cols.push({col:p.col, idx}); } });
+      if(cols.length>=2){
+        for(let i=0;i<cols.length-1;i++){
+          const a=cols[i], b=cols[i+1];
+          if(Math.abs(a.idx-b.idx)===1 && ((a.col===1 && b.col===r) || (a.col===r && b.col===1))){ hits++; break; }
+        }
+      }
+    });
+    return hits;
+  }
+  const simetrica = countExtremeConsecutivePairs(seq) >= 2;
+
+  const filledSet = new Set((BOARDS_STATE[n]?.cells||[]).map(c=>{
+    const [r,c2] = c.slot.split('-').map(Number); return `${r}-${c2}`; }));
+  const diagCol1 = [1,2,3,4,5].every(r=> filledSet.has(`${r}-1`));
+  const diagMain = [1,2,3,4,5].every(r=> filledSet.has(`${r}-${r}`));
+  const diagonal = diagCol1 || diagMain;
+
+  function isPerimeter(r,c){ return (c===1 || c===r || r===5); }
+  const steps = seq.map((p,i)=> ({...p, idx:i}));
+  const perimIdx = steps.filter(p=> isPerimeter(p.row,p.col)).map(p=>p.idx);
+  const innerIdx = steps.filter(p=> !isPerimeter(p.row,p.col)).map(p=>p.idx);
+  let mantoProcess = false;
+  if(innerIdx.length>0 && perimIdx.length>0){
+    const firstInner = Math.min(...innerIdx);
+    const lastPerim  = Math.max(...perimIdx);
+    if(lastPerim < firstInner) mantoProcess = true;
+  }
+
+  const extras = [];
+  if(simetrica) extras.push('Simétrica (extremos)');
+  if(diagonal) extras.push('Diagonal');
+  if(mantoProcess) extras.push('Em manto (processo)');
+
+  return {vertical, horizontal, alternada: horizontal==='Alternada', simetrica, diagonal, mantoProcess, aspect: asp, extras};
+}
+
+/* ---------------- UI: análise ao vivo (opcional) ---------------- */
+function renderAnalysisActive(){
+  const analysisEl = document.querySelector('#analysis');
+  if(analysisEl) analysisEl.innerHTML = '';
+  updateNavVisibility();
+  if(!SHOW_LIVE_ANALYSIS) return;
+  const placement = analyzePlacementForBoard(activeBoard);
+  const extrasTxt = placement.extras.length ? ' • ' + placement.extras.join(' • ') : '';
+  analysisEl.innerHTML = `<div><b>Modo de colocação</b>: ${placement.vertical} — ${placement.horizontal}${extrasTxt}</div>
+    <div><b>Aspecto</b>: ${placement.aspect.group} — ${placement.aspect.subtype}</div>`;
+}
+
+/* ---------------- Construção da pirâmide ativa ---------------- */
+function buildActivePyramid(){
+  const idxEl = $('#boardIndex'); if(idxEl) idxEl.textContent = String(activeBoard);
+  const pyr = $('#pyramid'); if(!pyr) return;
+  pyr.innerHTML='';
+  const rows = [1,2,3,4,5];
+  rows.forEach(n=>{
+    const r = document.createElement('div'); r.className='row-cells';
+    for(let i=0;i<n;i++){
+      const cell = document.createElement('div');
+      cell.className='cell';
+      cell.dataset.board = String(activeBoard);
+      cell.dataset.slot = `${n}-${i+1}`;
+      cell.dataset.label = slotLabel(n, i+1);
+      cell.setAttribute('aria-label', `célula ${slotLabel(n, i+1)} (linha ${n}, coluna ${i+1})`);
+      enableDrop(cell);
+      r.appendChild(cell);
+    }
+    pyr.appendChild(r);
+  });
+  (BOARDS_STATE[activeBoard]?.cells||[]).forEach(c=>{
+    const cell = document.querySelector(`.cell[data-slot="${c.slot}"]`);
+    if(cell) placeChip(cell, c.hex, c.key, c.label, c.shadeIndex, c.step, true);
+  });
+  updateCounts();
+  renderAnalysisActive();
+  updateNavVisibility();
+  setCellSize();
+}
+
+/* ---------------- Resumo/Percentuais ---------------- */
+function summarizeBoard(n){
+  const cells = (BOARDS_STATE[n]?.cells)||[]; const counts = {}; cells.forEach(c=> counts[c.key] = (counts[c.key]||0)+1);
+  const grid = buildGridFromBoard(n); const aspect = decideAspect(grid).best; const placement = analyzePlacementForBoard(n);
+  return {counts, aspect, placement};
+}
+
+function placementSequenceLabels(n){
+  const seq = (boardSeq[n]||[])
+    .filter(s=> !s.move && !s.swap)
+    .sort((a,b)=> a.step-b.step);
+  return seq.map(s=> s.label.toLowerCase());
+}
+
+function overallColorCounts(){
+  const counts = {};
+  for(let b=1;b<=3;b++){
+    (BOARDS_STATE[b]?.cells||[]).forEach(c=>{
+      counts[c.key] = (counts[c.key]||0)+1;
+    });
+  }
+  return counts;
+}
+function overallColorPercentages(){
+  const counts = overallColorCounts();
+  const total = Object.values(counts).reduce((a,b)=>a+b,0);
+  const out = {};
+  Object.keys(counts).sort().forEach(k=>{
+    const pct = total? (counts[k]/total)*100 : 0;
+    out[k] = { count: counts[k], pct: Math.round(pct*10)/10 };
+  });
+  return { total, byColor: out };
+}
+
+function buildPercentIndices(byColor){
+  const pct = k => (byColor[k]?.pct) || 0;
+  const round1 = v => Math.round(v*10)/10;
+
+  const normalidade = round1(pct('azul') + pct('vermelho') + pct('verde'));
+  const estimulo    = round1(pct('vermelho') + pct('amarelo') + pct('laranja'));
+  const fria        = round1(pct('azul') + pct('verde') + pct('violeta'));
+  const incolor     = round1(pct('preto') + pct('branco') + pct('cinza'));
+
+  const perColor = {
+    pct_branco:  pct('branco'),
+    pct_preto:   pct('preto'),
+    pct_cinza:   pct('cinza'),
+    pct_azul:    pct('azul'),
+    pct_violeta: pct('violeta'),
+    pct_vermelho:pct('vermelho'),
+    pct_laranja: pct('laranja'),
+    pct_amarelo: pct('amarelo'),
+    pct_marrom:  pct('marrom'),
+    pct_verde:   pct('verde')
+  };
+
+
+  const allResult = {
+    normalidade,
+    estimulo,
+    fria,
+    incolor,
+    ...perColor
+  };
+
+  return {
+    normalidade_pct: normalidade,
+    estimulo_pct: estimulo,
+    fria_pct: fria,
+    incolor_pct: incolor,
+    ...perColor,
+    questions: allResult
+  };
+}
+
+
+function renderOverallPercentagesRow(){
+  const body = document.querySelector('#summaryBody');
+  const {total, byColor} = overallColorPercentages();
+  const idx = buildPercentIndices(byColor);
+  const row = document.createElement('div'); row.className='row';
+  const parts = Object.entries(byColor)
+    .sort(([a],[b])=> a.localeCompare(b))
+    .map(([k,v])=> `${k}: ${v.pct}%`);
+  row.innerHTML = `<div><b>Total (3 pirâmides)</b></div>
+    <div style="margin-top:6px"><b>Cores — %</b>: ${parts.join(' • ') || '—'} <span class="small">(N=${total})</span></div>
+    <div style="margin-top:6px"><b>Índices</b>: normalidade ${idx.normalidade_pct}% • estímulo ${idx.estimulo_pct}% • fria ${idx.fria_pct}% • incolor ${idx.incolor_pct}%</div>`;
+  body.appendChild(row);
+}
+
+/* ---------------- Canvas / Imagens ---------------- */
+function drawPyramidCanvas(boardIndex, cell=40, gap=2, pad=10){
+  const rows = [1,2,3,4,5];
+  const W = pad*2 + (5*cell) + (4*gap);
+  const H = pad*2 + (5*cell) + (4*gap);
+  const cnv = document.createElement('canvas'); cnv.width=W; cnv.height=H;
+  const ctx = cnv.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,W,H);
+  const grid = buildGridFromBoard(boardIndex);
+  rows.forEach((n,rIdx)=>{
+    const row = grid[rIdx];
+    const rowWidth = n*cell + (n-1)*gap;
+    const startX = Math.round((W - rowWidth)/2);
+    const y = pad + rIdx*(cell+gap);
+    for(let c=0;c<n;c++){
+      const x = startX + c*(cell+gap);
+      ctx.fillStyle = row[c]? (row[c].hex || '#cccccc') : '#ffffff';
+      ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 1;
+      ctx.fillRect(x,y,cell,cell);
+      ctx.strokeRect(x+0.5,y+0.5,cell-1,cell-1);
+    }
+  });
+  return cnv;
+}
+const pyramidPngDataUrl = (b)=> drawPyramidCanvas(b).toDataURL('image/png');
+
+function combinedPyramidsCanvas(){
+  const c1 = drawPyramidCanvas(1), c2 = drawPyramidCanvas(2), c3 = drawPyramidCanvas(3);
+  const pad = 16, labelH = 22, gap = 10;
+  const W = c1.width + c2.width + c3.width + pad*2 + gap*2;
+  const H = Math.max(c1.height, c2.height, c3.height) + pad*2 + labelH;
+
+  const cnv = document.createElement('canvas');
+  cnv.width = W; cnv.height = H;
+  const ctx = cnv.getContext('2d');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0,0,W,H);
+  ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto';
+  ctx.fillStyle = '#111';
+
+  let x = pad;
+  ctx.fillText('Pirâmide 1', x, pad+14);
+  ctx.drawImage(c1, x, pad+labelH);
+  x += c1.width + gap;
+
+  ctx.fillText('Pirâmide 2', x, pad+14);
+  ctx.drawImage(c2, x, pad+labelH);
+  x += c2.width + gap;
+
+  ctx.fillText('Pirâmide 3', x, pad+14);
+  ctx.drawImage(c3, x, pad+labelH);
+
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.strokeRect(0.5,0.5,W-1,H-1);
+  return cnv;
+}
+
+
+
+/* ---------------- Categoria / Payload / Envio ---------------- */
+function buildCategoriasString(){
+  const proc = processoExecucao();
+  const parts = [`Processo: ${proc.tipo}`];
+  for(let i=1;i<=3;i++){
+    const {aspect, placement} = summarizeBoard(i);
+    const extras = placement.extras.length ? ` (${placement.extras.join(' • ')})` : '';
+    parts.push(`B${i}: ${aspect.group}/${aspect.subtype} — ${placement.vertical}/${placement.horizontal}${extras}`);
+  }
+  return parts.join(' | ');
+}
+
+// 1) Formata em: "1. Pergunta?: Resposta | 2. ... "
+function fmtQuestionsPipe(items){
+  let n = 0;
+  return (items || [])
+    .filter(it => it && it.q)
+    .map(it => {
+      n++;
+      const q = String(it.q).trim();
+      const q2 = q.endsWith('?') ? q : (q + '?');
+      const a = (it.a === null || it.a === undefined) ? '' : String(it.a).trim();
+      return `${n}. ${q2}: ${a}`;
+    })
+    .join(' | ');
+}
+
+function round1(v){
+  const num = Number(v);
+  if (!Number.isFinite(num)) return v;
+  return Math.round(num * 10) / 10;
+}
+
+// 2) Específico deste Pfister: transforma "idx" em lista numerada (mesmos dados, só que legíveis)
+function questionsFromPfisterIdx(idx){
+  const order = [
+   ['pct_azul',    'Azul (%)'],  
+   ['pct_vermelho','Vermelho (%)'],
+   ['pct_verde',   'Verde (%)'],
+   ['pct_violeta', 'Violeta (%)'],
+   ['pct_laranja', 'Laranja (%)'],
+   ['pct_amarelo', 'Amarelo (%)'],
+   ['pct_marrom',  'Marrom (%)'],
+   ['pct_preto',   'Preto (%)'],
+   ['pct_branco',  'Branco (%)'],
+   ['pct_cinza',   'Cinza (%)'],
+  
+   ['normalidade_pct', 'Normalidade (%)'],
+   ['estimulo_pct',    'Estímulo (%)'],
+   ['fria_pct',        'Fria (%)'],
+   ['incolor_pct',     'Incolor (%)'],
+    
+  ];
+
+  const items = order
+    .filter(([k]) => idx && idx[k] !== undefined)
+    .map(([k, label]) => ({ q: label, a: round1(idx[k]) }));
+
+  return fmtQuestionsPipe(items);
+}
+
+
+async function sendResults() {
+  const statusEl = document.querySelector('#sendStatus');
+  const btnConcluir = document.querySelector('#nextBoard');
+  const btnEnviar = document.querySelector('#sendResults');
+
+  try {
+    if (resultsSent) return;
+
+    const cpf = getCpfFromUrl();
+    const testCode = getTestCodeFromUrl();
+    const submittedAt = new Date().toISOString();
+
+    if (!cpf) throw new Error("CPF inválido.");
+    if (!patient) throw new Error("Sessão inválida.");
+    if (!allBoardsComplete()) throw new Error("Finalize as 3 pirâmides.");
+
+    hideBox("#alert");
+    if (statusEl) statusEl.textContent = "Enviando imagem...";
+
+    const uploadResult = await uploadCombinedImageToSupabase(cpf, testCode, submittedAt);
+    const resultsPayload = buildResultsPerguntasRespostasPfister(uploadResult.imageUrl);
+
+    if (statusEl) statusEl.textContent = "Salvando respostas...";
+
+    const { error: insertError } = await supabaseClient
+      .from("respostas")
+      .insert([
+        {
+          cpf: cpf,
+          code: testCode,
+          submitted_at: submittedAt,
+          results: resultsPayload,
+          image_url: uploadResult.imageUrl,
+          image_path: uploadResult.imagePath
+        }
+      ]);
+
+    if (insertError) {
+      console.error(insertError);
+      throw new Error(`Erro ao salvar respostas: ${insertError.message}`);
+    }
+
+    const nextTestsFeitos = buildUpdatedTestsFeitos(
+      patient.tests_feitos,
+      testCode,
+      submittedAt
+    );
+
+    const { error: updateError } = await supabaseClient
+      .from("patients")
+      .update({
+        tests_feitos: nextTestsFeitos
+      })
+      .eq("cpf", cpf);
+
+    if (updateError) {
+      console.error(updateError);
+      throw new Error("Respostas salvas, mas falhou ao marcar teste como feito.");
+    }
+
+    resultsSent = true;
+
+    if (statusEl) statusEl.textContent = "Pronto! Redirecionando...";
+    setBox("#alert", "Teste concluído com sucesso.", "ok");
+
+    setTimeout(() => {
+      redirectToAreaPaciente(cpf);
+    }, 700);
+
+  } catch (err) {
+    console.error(err);
+    if (statusEl) statusEl.textContent = err.message || "Erro ao enviar.";
+    setBox("#alert", err.message || "Erro ao enviar.", "err");
+    resultsSent = false;
+  } finally {
+    if (btnConcluir) btnConcluir.disabled = resultsSent ? true : !allBoardsComplete();
+    if (btnEnviar) btnEnviar.disabled = false;
+  }
+}
+function dataURLToBlob(dataURL) {
+  const parts = dataURL.split(",");
+  const mime = parts[0].match(/:(.*?);/)[1];
+  const binary = atob(parts[1]);
+  const array = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    array[i] = binary.charCodeAt(i);
+  }
+
+  return new Blob([array], { type: mime });
+}
+
+function buildImagePath(cpf, testCode, submittedAt) {
+  const stamp = submittedAt.replace(/[:.]/g, "-");
+  return `${cpf}/${testCode}/${stamp}.png`;
+}
+
+async function uploadCombinedImageToSupabase(cpf, testCode, submittedAt) {
+  const canvas = combinedPyramidsCanvas();
+  const dataUrl = canvas.toDataURL("image/png");
+  const blob = dataURLToBlob(dataUrl);
+
+  const imagePath = buildImagePath(cpf, testCode, submittedAt);
+
+  const { error: uploadError } = await supabaseClient
+    .storage
+    .from(STORAGE_BUCKET)
+    .upload(imagePath, blob, {
+      contentType: "image/png",
+      upsert: false
+    });
+
+  if (uploadError) {
+    console.error(uploadError);
+    throw new Error(`Erro ao enviar imagem ao Storage: ${uploadError.message}`);
+  }
+
+  const { data: publicData } = supabaseClient
+    .storage
+    .from(STORAGE_BUCKET)
+    .getPublicUrl(imagePath);
+
+  return {
+    imagePath,
+    imageUrl: publicData?.publicUrl || null
+  };
+}
+
+function buildResultsPerguntasRespostasPfister(imageUrl = null) {
+  const { byColor } = overallColorPercentages();
+  const idx = buildPercentIndices(byColor);
+  const proc = processoExecucao();
+
+  const p1 = analyzePlacementForBoard(1);
+  const p2 = analyzePlacementForBoard(2);
+  const p3 = analyzePlacementForBoard(3);
+
+  const perguntasRespostas = [
+    { pergunta: "Azul (%)", resposta: round1(idx.pct_azul) },
+    { pergunta: "Vermelho (%)", resposta: round1(idx.pct_vermelho) },
+    { pergunta: "Verde (%)", resposta: round1(idx.pct_verde) },
+    { pergunta: "Violeta (%)", resposta: round1(idx.pct_violeta) },
+    { pergunta: "Laranja (%)", resposta: round1(idx.pct_laranja) },
+    { pergunta: "Amarelo (%)", resposta: round1(idx.pct_amarelo) },
+    { pergunta: "Marrom (%)", resposta: round1(idx.pct_marrom) },
+    { pergunta: "Preto (%)", resposta: round1(idx.pct_preto) },
+    { pergunta: "Branco (%)", resposta: round1(idx.pct_branco) },
+    { pergunta: "Cinza (%)", resposta: round1(idx.pct_cinza) },
+    { pergunta: "Normalidade (%)", resposta: round1(idx.normalidade_pct) },
+    { pergunta: "Estímulo (%)", resposta: round1(idx.estimulo_pct) },
+    { pergunta: "Fria (%)", resposta: round1(idx.fria_pct) },
+    { pergunta: "Incolor (%)", resposta: round1(idx.incolor_pct) },
+    { pergunta: "Processo de execução", resposta: proc.tipo },
+    { pergunta: "Descrição do processo", resposta: proc.desc },
+    { pergunta: "Pirâmide 1 - Vertical", resposta: p1.vertical },
+    { pergunta: "Pirâmide 1 - Horizontal", resposta: p1.horizontal },
+    { pergunta: "Pirâmide 1 - Extras", resposta: p1.extras?.join(" | ") || "Nenhum" },
+    { pergunta: "Pirâmide 2 - Vertical", resposta: p2.vertical },
+    { pergunta: "Pirâmide 2 - Horizontal", resposta: p2.horizontal },
+    { pergunta: "Pirâmide 2 - Extras", resposta: p2.extras?.join(" | ") || "Nenhum" },
+    { pergunta: "Pirâmide 3 - Vertical", resposta: p3.vertical },
+    { pergunta: "Pirâmide 3 - Horizontal", resposta: p3.horizontal },
+    { pergunta: "Pirâmide 3 - Extras", resposta: p3.extras?.join(" | ") || "Nenhum" },
+    { pergunta: "Imagem", resposta: imageUrl }
+  ];
+
+  return perguntasRespostas;
+}
+
+function buildResultsMetaPfister() {
+  const { total, byColor } = overallColorPercentages();
+  const idx = buildPercentIndices(byColor);
+  const proc = processoExecucao();
+
+  return {
+    total_elementos: total,
+    processo_execucao: proc,
+    percentuais_cores: byColor,
+    indices: idx,
+    boards: {
+      b1: summarizeBoard(1),
+      b2: summarizeBoard(2),
+      b3: summarizeBoard(3)
+    },
+    sequencias: {
+      b1: placementSequenceLabels(1),
+      b2: placementSequenceLabels(2),
+      b3: placementSequenceLabels(3)
+    }
+  };
+}
+
+
+/* ---------------- Processo/Resumo ---------------- */
+function processoExecucao(){
+  const p = [1,2,3].map(i=> analyzePlacementForBoard(i));
+  const pairs = p.map(x=> `${x.vertical}/${x.horizontal}`);
+  const allEqual = pairs.every(v=> v===pairs[0]);
+  const majority = (arr)=>{ const m={}; arr.forEach(v=> m[v]=(m[v]||0)+1); let best=null; for(const k in m){ if(!best||m[k]>m[best]) best=k;} return {key:best,count:m[best]}; };
+  const maj = majority(pairs);
+  const relax = p.filter(x=> x.aspect.group==='Tapete' && (x.horizontal==='Mista' || x.vertical==='Mista')).length;
+  if(allEqual) return {tipo:'Metódica/sistemática', desc:'repete o mesmo modo nas 3 pirâmides; trabalho organizado, planejado e rígido.'};
+  if(relax>=2) return {tipo:'Relaxada', desc:'exageradamente desorganizada, escolhas aleatórias; pouca preocupação com precisão.'};
+  if(maj.count>=2) return {tipo:'Ordenada', desc:'há padrão lógico e constância com pequenas variações.'};
+  return {tipo:'Desordenada', desc:'muda muito entre pirâmides e ritmo; difícil acompanhar; pode soar ansioso.'};
+}
+
+function showSummary() {
+  if (!allBoardsComplete()) return;
+
+  const body = $('#summaryBody');
+  if (!body) return;
+  body.innerHTML = '';
+
+  const proc = processoExecucao();
+  const header = document.createElement('div');
+  header.className = 'row';
+  header.innerHTML = `<div><b>Processo de execução</b>: ${proc.tipo}</div>
+                      <div style="margin-top:4px">${proc.desc}</div>`;
+  body.appendChild(header);
+
+  renderOverallPercentagesRow();
+
+  for (let i = 1; i <= 3; i++) {
+    const {counts, aspect, placement} = summarizeBoard(i);
+    const seqLabels = placementSequenceLabels(i).join(', ');
+    const colorList = Object.keys(counts).sort()
+      .map(k => `${k}: ${counts[k]}`).join(' • ') || '—';
+
+    const box = document.createElement('div');
+    box.className = 'row';
+    const extrasTxt = placement.extras.length ? ' • ' + placement.extras.join(' • ') : '';
+    box.innerHTML = `<div><b>Pirâmide ${i}</b></div>
+      <div style="margin-top:4px"><b>Modo de colocação</b>: ${placement.vertical} — ${placement.horizontal}${extrasTxt}</div>
+      <div style="margin-top:4px"><b>Aspecto</b>: ${aspect.group} — ${aspect.subtype}</div>
+      <div style="margin-top:4px"><b>Cores (quantidade)</b>: ${colorList}</div>
+      <div style="margin-top:4px"><b>Ordem de colocação</b>: ${seqLabels || '—'}</div>`;
+    body.appendChild(box);
+  }
+
+  const sendBtn = $('#sendResults');
+   const statusEl = $('#sendStatus');
+
+  if (sendBtn) sendBtn.style.display = 'inline-flex';
+  if (statusEl) statusEl.textContent = '';
+
+  const modal = $('#summaryModal');
+  if (modal) modal.style.display = 'flex';
+}
+function normalizeCPF(cpf) {
+  return String(cpf || "").replace(/\D/g, "");
+}
+
+function getCpfFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  let cpf = params.get("cpf");
+  if (cpf) return normalizeCPF(cpf);
+
+  const raw = window.location.search.replace("?", "").trim();
+  if (/^\d{11}$/.test(raw)) return raw;
+
+  return "";
+}
+
+function getTestCodeFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("code") || TEST_CODE_FIXO;
+}
+
+function redirectToAreaPaciente(cpf) {
+  window.location.href = `${AREA_PACIENTE_URL}?${cpf}`;
+}
+
+function isObject(v) {
+  return v && typeof v === "object" && !Array.isArray(v);
+}
+
+function containsTestCode(jsonb, testCode) {
+  if (!jsonb) return false;
+
+  if (typeof jsonb === "string") return jsonb === testCode;
+
+  if (Array.isArray(jsonb)) {
+    return jsonb.some(item => {
+      if (typeof item === "string") return item === testCode;
+      if (isObject(item)) {
+        return item.code === testCode || item.test_code === testCode || item.id === testCode || containsTestCode(item, testCode);
+      }
+      return false;
+    });
+  }
+
+  if (isObject(jsonb)) {
+    if (Object.prototype.hasOwnProperty.call(jsonb, testCode)) {
+      const value = jsonb[testCode];
+      if (value !== false && value !== null && value !== undefined) return true;
+      return false;
+    }
+
+    if (jsonb.code === testCode || jsonb.test_code === testCode || jsonb.id === testCode) {
+      return true;
+    }
+
+    return Object.values(jsonb).some(v => containsTestCode(v, testCode));
+  }
+
+  return false;
+}
+
+function isTestLiberado(testsLiberados, testCode) {
+  if (!containsTestCode(testsLiberados, testCode)) return false;
+
+  if (isObject(testsLiberados) && Object.prototype.hasOwnProperty.call(testsLiberados, testCode)) {
+    const v = testsLiberados[testCode];
+    if (typeof v === "boolean") return v;
+    if (isObject(v) && "liberado" in v) return Boolean(v.liberado);
+    if (typeof v === "string") return !["false", "0", "nao", "não"].includes(v.toLowerCase());
+    return Boolean(v);
+  }
+
+  return true;
+}
+
+function isTestFeito(testsFeitos, testCode) {
+  if (!containsTestCode(testsFeitos, testCode)) return false;
+
+  if (isObject(testsFeitos) && Object.prototype.hasOwnProperty.call(testsFeitos, testCode)) {
+    const v = testsFeitos[testCode];
+    if (typeof v === "boolean") return v;
+    if (isObject(v) && "feito" in v) return Boolean(v.feito);
+    if (typeof v === "string") return !["false", "0", "nao", "não"].includes(v.toLowerCase());
+    return Boolean(v);
+  }
+
+  return true;
+}
+
+function normalizeTestsFeitosForSave(current) {
+  const out = {};
+
+  if (!current) return out;
+
+  if (typeof current === "string") {
+    out[current] = { feito: true };
+    return out;
+  }
+
+  if (Array.isArray(current)) {
+    current.forEach(item => {
+      if (typeof item === "string") {
+        out[item] = { feito: true };
+      } else if (isObject(item)) {
+        const code = item.code || item.test_code || item.id;
+        if (code) {
+          out[code] = {
+            ...item,
+            feito: ("feito" in item) ? Boolean(item.feito) : true
+          };
+        }
+      }
+    });
+    return out;
+  }
+
+  if (isObject(current)) {
+    Object.entries(current).forEach(([key, value]) => {
+      if (typeof value === "boolean") {
+        out[key] = { feito: value };
+      } else if (typeof value === "string") {
+        out[key] = { feito: !["false", "0", "nao", "não"].includes(value.toLowerCase()) };
+      } else if (isObject(value)) {
+        out[key] = { ...value };
+      } else {
+        out[key] = { feito: Boolean(value) };
+      }
+    });
+  }
+
+  return out;
+}
+
+function buildUpdatedTestsFeitos(currentTestsFeitos, testCode, submittedAtIso) {
+  const next = normalizeTestsFeitosForSave(currentTestsFeitos);
+
+  next[testCode] = {
+    ...(isObject(next[testCode]) ? next[testCode] : {}),
+    feito: true,
+    submitted_at: submittedAtIso
+  };
+
+  return next;
+}
+
+
+
+async function validarAcessoAoTeste() {
+  const cpf = getCpfFromUrl();
+  const testCode = getTestCodeFromUrl();
+
+  if (!cpf || cpf.length !== 11) {
+    throw new Error("CPF inválido ou ausente na URL.");
+  }
+
+  const { data, error } = await supabaseClient
+    .from("patients")
+    .select("cpf, nome, tests_liberados, tests_feitos")
+    .eq("cpf", cpf)
+    .maybeSingle();
+
+  if (error) {
+    console.error(error);
+    throw new Error("Erro ao consultar a base de dados.");
+  }
+
+  if (!data) {
+    throw new Error("CPF não encontrado.");
+  }
+
+  const liberado = isTestLiberado(data.tests_liberados, testCode);
+  if (!liberado) {
+    throw new Error("Teste não liberado.");
+  }
+
+  const feito = isTestFeito(data.tests_feitos, testCode);
+  if (feito) {
+    redirectToAreaPaciente(cpf);
+    return null;
+  }
+
+  return data;
+}
+
+(async function boot() {
+  try {
+    const data = await validarAcessoAoTeste();
+    if (!data) return;
+
+    patient = data;
+    CPF = normalizeCPF(data.cpf);
+
+    hideBox("#alert");
+    document.body.classList.add("ok");
+
+    enforceActiveBoardProgression();
+    buildPaletteSide();
+    buildActivePyramid();
+    enableTrash();
+
+    const backdrop = $('#summaryModal');
+    if (backdrop) {
+      backdrop.addEventListener('click', (e) => {
+        if (e.target.id === 'summaryModal') {
+          const m = $('#summaryModal');
+          if (m) m.style.display = 'none';
+        }
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    setBox("#alert", err.message || "Falha ao abrir o formulário.", "err");
+  }
+})();
+/* ---------------- Listeners globais ---------------- */
+document.addEventListener('click', async (e) => {
+  const nextBtn = e.target.closest('#nextBoard');
+  if (nextBtn) {
+    if (activeBoard < 3) {
+      if (isBoardComplete(activeBoard)) {
+        goBoard(activeBoard + 1);
+      }
+    } else {
+      if (allBoardsComplete()) {
+        nextBtn.disabled = true;
+        await sendResults();
+      }
+    }
+  }
+
+  const sendBtn = e.target.closest('#sendResults');
+  if (sendBtn) {
+    sendBtn.disabled = true;
+    await sendResults();
+  }
+});
+/* ---------------- Tests (console) — opcionais ---------------- */
+(function(){
+  const assert=(name,cond)=>{ (cond?console.log('✅',name):console.error('❌',name)); };
+  console.log('\nConclua as 3 pirâmides e abra o resumo para enviar.');
+})();
+</script>
+</body>
+</html>
