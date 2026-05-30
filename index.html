@@ -774,6 +774,8 @@ async function sendResults() {
     if (resultsSent) return;
 
     const cpf = getCpfFromUrl();
+    const token = getTokenFromUrl();
+    installPatientTokenAccessShim();
     const testCode = getTestCodeFromUrl();
     const submittedAt = new Date().toISOString();
 
@@ -1018,25 +1020,34 @@ function normalizeCPF(cpf) {
   return String(cpf || "").replace(/\D/g, "");
 }
 
-function getCpfFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  let cpf = params.get("cpf");
-  if (cpf) return normalizeCPF(cpf);
+    function getTokenFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return String(params.get("token") || params.get("t") || "").trim();
+    }
 
-  const raw = window.location.search.replace("?", "").trim();
-  if (/^\d{11}$/.test(raw)) return raw;
+    function getCpfFromUrl() {
+      if (window.__patientFormAccess?.cpf) return normalizeCPF(window.__patientFormAccess.cpf);
 
-  return "";
-}
+      const params = new URLSearchParams(window.location.search);
+      const legacyCpf = params.get("cpf");
+      if (legacyCpf) return normalizeCPF(legacyCpf);
 
-function getTestCodeFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  return params.get("code") || TEST_CODE_FIXO;
-}
+      const raw = window.location.search.replace("?", "").trim();
+      if (/^\d{11}$/.test(raw)) return raw;
 
-function redirectToAreaPaciente(cpf) {
-  window.location.href = `${AREA_PACIENTE_URL}?${cpf}`;
-}
+      return "";
+    }
+
+    function getTestCodeFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("form") || params.get("code") || TEST_CODE_FIXO;
+    }
+
+
+function redirectToAreaPaciente() {
+      const token = getTokenFromUrl();
+      window.location.href = token ? `${AREA_PACIENTE_URL}?token=${encodeURIComponent(token)}` : AREA_PACIENTE_URL;
+    }
 
 function isObject(v) {
   return v && typeof v === "object" && !Array.isArray(v);
@@ -1158,14 +1169,84 @@ function buildUpdatedTestsFeitos(currentTestsFeitos, testCode, submittedAtIso) {
   return next;
 }
 
+    async function getPatientFormAccessByToken() {
+      const token = getTokenFromUrl();
+      const testCode = getTestCodeFromUrl();
+
+      if (!token || !testCode) {
+        return { data: null, error: new Error("Link invalido ou formulario nao informado.") };
+      }
+
+      if (window.__patientFormAccess && window.__patientFormAccess.form_code === testCode) {
+        return { data: window.__patientFormAccess, error: null };
+      }
+
+      if (!window.__patientFormAccessPromise) {
+        window.__patientFormAccessPromise = supabaseClient
+          .rpc("get_public_patient_form_access", {
+            p_token: token,
+            p_form_code: testCode
+          })
+          .then(({ data, error }) => {
+            if (error) return { data: null, error };
+            const row = Array.isArray(data) ? data[0] : data;
+            window.__patientFormAccess = row || null;
+            return { data: row || null, error: null };
+          });
+      }
+
+      return window.__patientFormAccessPromise;
+    }
+
+    function installPatientTokenAccessShim() {
+      if (!supabaseClient || supabaseClient.__patientTokenAccessShim) return;
+
+      const originalFrom = supabaseClient.from.bind(supabaseClient);
+
+      supabaseClient.from = function(table) {
+        if (table !== "patients") return originalFrom(table);
+
+        const selectBuilder = {
+          select() { return this; },
+          eq() { return this; },
+          in() { return this; },
+          limit() { return this; },
+          order() { return this; },
+          maybeSingle() { return getPatientFormAccessByToken(); },
+          single() { return getPatientFormAccessByToken(); },
+          async then(resolve, reject) {
+            try {
+              const result = await getPatientFormAccessByToken();
+              return resolve(result);
+            } catch (err) {
+              if (reject) return reject(err);
+              throw err;
+            }
+          }
+        };
+
+        return {
+          select() { return selectBuilder; },
+          update() {
+            return {
+              eq: async () => ({ data: null, error: null })
+            };
+          }
+        };
+      };
+
+      supabaseClient.__patientTokenAccessShim = true;
+    }
 
 
-async function validarAcessoAoTeste() {
+    async function validarAcessoAoTeste() {
   const cpf = getCpfFromUrl();
+  const token = getTokenFromUrl();
+  installPatientTokenAccessShim();
   const testCode = getTestCodeFromUrl();
 
-  if (!cpf || cpf.length !== 11) {
-    throw new Error("CPF inválido ou ausente na URL.");
+  if (!token) {
+    throw new Error("Link invalido ou expirado. Abra o formulario pela area do paciente.");
   }
 
   const { data, error } = await supabaseClient
