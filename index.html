@@ -392,123 +392,475 @@ function buildGridFromBoard(n){
   (BOARDS_STATE[n]?.cells||[]).forEach(c=>{ const [r,c2] = c.slot.split('-').map(Number); grid[r-1][c2-1] = {color:c.key, shade:c.shadeIndex, hex:c.hex, step:c.step}; });
   return grid;
 }
-function symmetryScore(grid){ let tot=0, ok=0; grid.forEach((row)=>{ const n=row.length; for(let c=0;c<Math.floor(n/2);c++){ tot++; const a=row[c], b=row[n-1-c]; if(a&&b&&a.color===b.color) ok++; } }); return tot? ok/tot : 0; }
-function layersByColorRatio(grid){ let ok=0; grid.forEach(row=>{ if(row.every(x=> x && row[0] && x.color===row[0].color)) ok++; }); return ok/5; }
-function isAlternatedPattern(grid){
-  const colors = new Set(); grid.forEach(r=> r.forEach(x=>{ if(x) colors.add(x?.color); })); if(colors.size!==2) return false;
-  let okRows=0; grid.forEach(row=>{ const seq=row.map(x=> x? x.color : null); let alt=true; for(let i=1;i<seq.length;i++){ if(!seq[i]||!seq[i-1]||seq[i]===seq[i-1]) { alt=false; break; } } if(alt) okRows++; });
-  return okRows>=3;
+const ASCENDENTE_DIRETA = ['5-1','5-2','5-3','5-4','5-5','4-1','4-2','4-3','4-4','3-1','3-2','3-3','2-1','2-2','1-1'];
+const ASCENDENTE_INVERSA = ['5-5','5-4','5-3','5-2','5-1','4-4','4-3','4-2','4-1','3-3','3-2','3-1','2-2','2-1','1-1'];
+const DESCENDENTE_DIRETA = ['1-1','2-1','2-2','3-1','3-2','3-3','4-1','4-2','4-3','4-4','5-1','5-2','5-3','5-4','5-5'];
+const DESCENDENTE_INVERSA = ['1-1','2-2','2-1','3-3','3-2','3-1','4-4','4-3','4-2','4-1','5-5','5-4','5-3','5-2','5-1'];
+const DESCENDENTE_ALTERNADA = ['1-1','2-1','2-2','3-3','3-2','3-1','4-1','4-2','4-3','4-4','5-5','5-4','5-3','5-2','5-1'];
+const ASCENDENTE_ALTERNADA = ['5-1','5-2','5-3','5-4','5-5','4-4','4-3','4-2','4-1','3-1','3-2','3-3','2-2','2-1','1-1'];
+const PARES_SIMETRICOS = [['2-1','2-2'],['3-1','3-3'],['4-1','4-4'],['4-2','4-3'],['5-1','5-5'],['5-2','5-4']];
+const BORDA_EXTERNA = new Set(['1-1','2-1','2-2','3-1','3-3','4-1','4-4','5-1','5-2','5-3','5-4','5-5']);
+const INTERIOR = new Set(['3-2','4-2','4-3']);
+const AREA_CENTRAL = new Set(['3-2','4-2','4-3','5-3']);
+const EIXO_CENTRAL = new Set(['1-1','3-2','5-3']);
+const DIAGONAIS_ESQUERDA_DIREITA = [['1-1','2-1','3-1','4-1','5-1'],['2-2','3-2','4-2','5-2'],['3-3','4-3','5-3'],['4-4','5-4'],['5-5']];
+const DIAGONAIS_DIREITA_ESQUERDA = [['1-1','2-2','3-3','4-4','5-5'],['2-1','3-2','4-3','5-4'],['3-1','4-2','5-3'],['4-1','5-2'],['5-1']];
+const NIVEL_ORGANIZACAO = {
+  'tapete puro': 1,
+  'tapete desequilibrado': 1,
+  'tapete furado ou rasgado': 1,
+  'tapete com início de ordem': 1.5,
+  'formação em camadas': 2,
+  'formação simétrica': 2,
+  'formação alternada': 2,
+  'estrutura simétrica': 3,
+  'estrutura em escada': 3,
+  'estrutura em manto': 3,
+  'estrutura assimétrica dinâmica': 3,
+  'estrutura em mosaico': 3
+};
+
+function round2(v){ return Math.round(Number(v || 0) * 100) / 100; }
+function clamp01(v){ return Math.max(0, Math.min(1, Number(v) || 0)); }
+function posId(row, col){ return `${row}-${col}`; }
+function posLabelFromId(id){ const [r,c] = id.split('-').map(Number); return slotLabel(r,c); }
+function finalCellsForBoard(n){
+  return (BOARDS_STATE[n]?.cells || [])
+    .map(c => {
+      const [row, col] = c.slot.split('-').map(Number);
+      return {...c, row, col, id: posId(row, col)};
+    })
+    .filter(c => c.id);
 }
-function isEscada(grid){ for(let r=1;r<=3;r++){ for(let c=1;c<=r;c++){ const a=grid[r-1][c-1]; const b=grid[r][c-1]; const d=grid[r][c]; if(a&&b&&d&&a.color===b.color&&a.color===d.color) return true; } } return false; }
+function gridPieces(grid){
+  const out = [];
+  grid.forEach((row, ri) => row.forEach((piece, ci) => {
+    if(piece) out.push({...piece, row: ri + 1, col: ci + 1, id: posId(ri + 1, ci + 1)});
+  }));
+  return out;
+}
+function dominantRatio(items, keyFn){
+  if(!items.length) return {key:null, count:0, ratio:0};
+  const counts = {};
+  items.forEach(item => {
+    const key = keyFn(item);
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  let best = null;
+  Object.keys(counts).forEach(key => { if(!best || counts[key] > counts[best]) best = key; });
+  return {key: best, count: counts[best], ratio: counts[best] / items.length};
+}
+function symmetryScore(grid){
+  let total = 0, same = 0;
+  PARES_SIMETRICOS.forEach(([aId,bId]) => {
+    const [ar,ac] = aId.split('-').map(Number);
+    const [br,bc] = bId.split('-').map(Number);
+    const a = grid[ar-1]?.[ac-1], b = grid[br-1]?.[bc-1];
+    if(a && b){ total++; if(a.color === b.color) same++; }
+  });
+  return total ? same / total : 0;
+}
+function rowsSymAvg(grid){ return symmetryScore(grid); }
+function layerStats(grid){
+  const scores = grid.map(row => dominantRatio(row.filter(Boolean), p => p.color).ratio);
+  const strongRows = scores.filter(v => v >= 0.75).length;
+  const score = scores.length ? scores.reduce((a,b)=>a+b,0) / scores.length : 0;
+  return {score: clamp01(score), strongRows};
+}
+function layersByColorRatio(grid){ return layerStats(grid).score; }
+function alternationScore(grid){
+  const pieces = gridPieces(grid);
+  if(pieces.length < 15) return 0;
+  const counts = {};
+  pieces.forEach(p => counts[p.color] = (counts[p.color] || 0) + 1);
+  const topTwo = Object.values(counts).sort((a,b)=>b-a).slice(0,2).reduce((a,b)=>a+b,0);
+  const dominance = topTwo / pieces.length;
+  let total = 0, alternating = 0;
+  grid.forEach(row => {
+    for(let i=1;i<row.length;i++){
+      const a = row[i-1], b = row[i];
+      if(a && b){ total++; if(a.color !== b.color) alternating++; }
+    }
+  });
+  const adjacency = total ? alternating / total : 0;
+  return clamp01(adjacency * (dominance >= 0.75 ? 1 : 0.65));
+}
+function isAlternatedPattern(grid){ return alternationScore(grid) >= 0.80; }
+function diagonalGroupScore(grid, groups){
+  let weighted = 0, total = 0;
+  groups.forEach(group => {
+    const pieces = group.map(id => {
+      const [r,c] = id.split('-').map(Number);
+      return grid[r-1]?.[c-1];
+    }).filter(Boolean);
+    if(!pieces.length) return;
+    const d = dominantRatio(pieces, p => p.color).ratio;
+    weighted += d * pieces.length;
+    total += pieces.length;
+  });
+  return total ? weighted / total : 0;
+}
+function escadaScore(grid){ return Math.max(diagonalGroupScore(grid, DIAGONAIS_ESQUERDA_DIREITA), diagonalGroupScore(grid, DIAGONAIS_DIREITA_ESQUERDA)); }
+function isEscada(grid){ return escadaScore(grid) >= 0.80; }
+function mantoScore(grid){
+  const border = [], inner = [];
+  gridPieces(grid).forEach(p => (BORDA_EXTERNA.has(p.id) ? border : inner).push(p));
+  if(border.length < BORDA_EXTERNA.size || inner.length < INTERIOR.size) return {score:0, dominant:null, interiorDifferent:false, subtype:null};
+  const domBorder = dominantRatio(border, p => p.color);
+  const domInner = dominantRatio(inner, p => p.color);
+  const interiorDifferent = !!domBorder.key && domBorder.key !== domInner.key;
+  const score = interiorDifferent ? domBorder.ratio : domBorder.ratio * 0.55;
+  const top = grid[0]?.[0];
+  return {score: clamp01(score), dominant: domBorder.key, interiorDifferent, subtype: top && top.color === domBorder.key ? 'manto fechado' : 'manto aberto'};
+}
 function detectMantoByColors(grid){
-  const perim=[]; for(let c=1;c<=5;c++) perim.push([5,c]); perim.push([4,1],[4,4],[3,1],[3,3],[2,1],[2,2],[1,1]);
-  const inside=[]; for(let r=3;r<=5;r++){ for(let c=1;c<=r;c++){ const isEdge=(c===1||c===r||r===5); if(!isEdge) inside.push([r,c]); } }
-  const pv = perim.map(([r,c])=> grid[r-1][c-1]).filter(Boolean); const iv = inside.map(([r,c])=> grid[r-1][c-1]).filter(Boolean);
-  if(pv.length!==perim.length || iv.length!==inside.length) return null;
-  const pColor=pv[0].color, iColor=iv[0].color; const perimOk=pv.every(v=>v.color===pColor), insideOk=iv.every(v=>v.color===iColor);
-  if(!perimOk||!insideOk||pColor===iColor) return null; const top = grid[0][0]; const tipo = (top && top.color===pColor) ? 'manto fechado' : 'manto aberto';
-  return {tipo, perim:pColor, miolo:iColor};
+  const m = mantoScore(grid);
+  return m.score >= 0.80 ? {tipo:m.subtype, perim:m.dominant, miolo:null} : null;
 }
-function whiteStats(grid){ const whites=[]; grid.forEach((row,ri)=>{ row.forEach((x,ci)=>{ if(x && (x.color==='branco' || (x.hex||'').toLowerCase()==='#ffffff')) whites.push([ri+1,ci+1]); }); }); return {count:whites.length, coords:whites}; }
-function rowsSymAvg(grid){ const ratios = grid.map(row=>{ const n=row.length; let tot=0, ok=0; for(let c=0;c<Math.floor(n/2);c++){ const a=row[c], b=row[n-1-c]; if(a&&b){ tot++; if(a.color===b.color) ok++; } } return tot? ok/tot : 0; }).filter(v=>!Number.isNaN(v)); if(!ratios.length) return 0; return ratios.reduce((a,b)=>a+b,0)/ratios.length; }
-function decideAspect(grid){
-  const symG = symmetryScore(grid);
-  const symRows = rowsSymAvg(grid);
-  const layersRatio = layersByColorRatio(grid);
-  const alt = isAlternatedPattern(grid);
-  const escada = isEscada(grid);
-  const manto = detectMantoByColors(grid);
+function whiteStats(grid){
+  const whites = [];
+  grid.forEach((row,ri)=> row.forEach((x,ci)=> {
+    if(x && (x.color === 'branco' || (x.hex || '').toLowerCase() === '#ffffff')) whites.push([ri+1,ci+1,posId(ri+1,ci+1)]);
+  }));
+  return {count: whites.length, coords: whites};
+}
+function darknessValue(piece){
+  const base = {branco:0, amarelo:0.15, laranja:0.35, cinza:0.55, verde:0.55, azul:0.60, vermelho:0.60, violeta:0.70, marrom:0.75, preto:1};
+  const shadeBoost = Number.isFinite(piece?.shade) ? Math.min(0.20, piece.shade * 0.06) : 0;
+  return clamp01((base[piece?.color] ?? 0.45) + shadeBoost);
+}
+function imbalanceScore(grid){
+  let left = 0, right = 0, top = 0, bottom = 0, total = 0;
+  gridPieces(grid).forEach(p => {
+    const d = darknessValue(p);
+    total += d;
+    const mid = (p.row + 1) / 2;
+    if(p.col <= mid) left += d; else right += d;
+    if(p.row <= 3) top += d; else bottom += d;
+  });
+  if(total <= 0) return 0;
+  return clamp01(Math.max(Math.abs(left-right), Math.abs(top-bottom)) / total);
+}
+function furoScore(grid, indices){
   const w = whiteStats(grid);
-  function darknessNorm2(piece){
-    const meta={branco:1,preto:4,cinza:2,azul:3,violeta:3,vermelho:3,laranja:2,amarelo:1,marrom:3,verde:3};
-    const scale = meta[piece.color]||2; return (piece.shade??0)/Math.max(1,scale-1);
+  if(!w.count) return 0;
+  const central = w.coords.some(([, , id]) => AREA_CENTRAL.has(id));
+  const rowWhite = grid.some(row => row.length && row.filter(p => p?.color === 'branco').length / row.length >= 0.80);
+  if(indices.scoreCamadas >= 0.60 || indices.scoreManto >= 0.80 || indices.scoreSimetria >= 0.75) return central ? 0.45 : 0.30;
+  return clamp01(0.50 + (w.count >= 2 ? 0.20 : 0) + (central ? 0.20 : 0) + (rowWhite ? 0.10 : 0));
+}
+function matizacaoScore(grid){
+  const pieces = gridPieces(grid);
+  const families = {};
+  pieces.forEach(p => {
+    families[p.color] = families[p.color] || new Set();
+    families[p.color].add(Number(p.shade || 0));
+  });
+  let best = 0;
+  Object.keys(families).forEach(color => {
+    const count = pieces.filter(p => p.color === color).length;
+    const ratio = pieces.length ? count / pieces.length : 0;
+    const tones = families[color].size;
+    if(ratio >= 0.60 && tones >= 3) best = Math.max(best, ratio);
+  });
+  return best;
+}
+function divisionScore(grid){
+  const pieces = gridPieces(grid);
+  if(pieces.length < 15) return 0;
+  const left = pieces.filter(p => p.col <= (p.row + 1) / 2);
+  const right = pieces.filter(p => p.col > (p.row + 1) / 2);
+  const top = pieces.filter(p => p.row <= 3);
+  const bottom = pieces.filter(p => p.row >= 4);
+  function contrast(a,b){
+    if(!a.length || !b.length) return 0;
+    const da = a.reduce((sum,p)=>sum+darknessValue(p),0) / a.length;
+    const db = b.reduce((sum,p)=>sum+darknessValue(p),0) / b.length;
+    return Math.abs(da - db);
   }
-  let leftDark=0,rightDark=0; grid.forEach((row)=>{ const mid=Math.ceil(row.length/2); row.forEach((x,ci)=>{ if(!x) return; const d=darknessNorm2(x); if(ci+1<=mid) leftDark+=d; else rightDark+=d; }); });
-  const darkImbalance = Math.abs(leftDark-rightDark);
+  return clamp01(Math.max(contrast(left,right), contrast(top,bottom)));
+}
+function formalLabel(aspect){ return `${String(aspect.group || '').toLowerCase()} ${String(aspect.subtype || '').toLowerCase()}`.trim(); }
+function decideAspect(grid){
+  const layer = layerStats(grid);
+  const scoreCamadas = layer.score;
+  const scoreSimetria = symmetryScore(grid);
+  const scoreAlternancia = alternationScore(grid);
+  const scoreEscada = escadaScore(grid);
+  const manto = mantoScore(grid);
+  const scoreManto = manto.score;
+  const scoreDesequilibrio = imbalanceScore(grid);
+  const baseIndices = {scoreCamadas, scoreSimetria, scoreAlternancia, scoreManto, scoreEscada};
+  const scoreFuro = furoScore(grid, baseIndices);
+  const scoreMatizacao = matizacaoScore(grid);
+  const scoreDivisao = divisionScore(grid);
+  const scoreInicioOrdem = clamp01(Math.max(
+    scoreSimetria >= 0.30 && scoreSimetria < 0.70 ? scoreSimetria : 0,
+    scoreCamadas >= 0.30 && scoreCamadas < 0.60 ? scoreCamadas : 0,
+    scoreAlternancia >= 0.45 && scoreAlternancia < 0.75 ? scoreAlternancia : 0
+  ));
+  const scoreEstruturaSimetrica = scoreSimetria >= 0.85 && EIXO_CENTRAL.size === 3 ? scoreSimetria : 0;
+  const rowWhiteStrong = grid.some(row => row.length && row.filter(p => p?.color === 'branco').length / row.length >= 0.80);
+  const sinaisEspeciais = {
+    divisao: scoreDivisao >= 0.75,
+    corteOuMutilacao: rowWhiteStrong || (whiteStats(grid).coords.some(([, , id]) => id === '1-1') && scoreFuro >= 0.60),
+    matizacao: scoreMatizacao >= 0.60,
+    tendencia: null
+  };
 
-  if(manto){ return {best:{group:'Estrutura', subtype:'em manto'}}; }
-  if(symG>=0.9 || escada){ return {best:{group:'Estrutura', subtype:'simétrica'}}; }
-  if(!manto && symG>=0.30 && symG<=0.75 && layersRatio<0.8){ return {best:{group:'Estrutura', subtype:'assimétrica dinâmica'}}; }
-  if(!manto && symG<0.9 && layersRatio<0.8 && !alt){ return {best:{group:'Estrutura', subtype:'em mosaico'}}; }
-  if(layersRatio>=0.80){ return {best:{group:'Formação', subtype:'em camadas'}}; }
-  if(alt){ return {best:{group:'Formação', subtype:'alternada'}}; }
-  if(symRows>=0.85){ return {best:{group:'Formação', subtype:'simétrica'}}; }
-  if(w.count>=1){ return {best:{group:'Tapete', subtype:'furado/rasgado'}}; }
-  if(darkImbalance>=2.0){ return {best:{group:'Tapete', subtype:'desequilibrado'}}; }
-  if(symG>0.25 || symRows>0.4 || layersRatio>0.3){ return {best:{group:'Tapete', subtype:'início de ordem'}}; }
-  return {best:{group:'Tapete', subtype:'puro'}};
+  let best = null;
+  if(scoreFuro >= 0.80) best = {group:'Tapete', subtype:'furado ou rasgado', score:scoreFuro};
+  else if(scoreManto >= 0.80) best = {group:'Estrutura', subtype:'em manto', score:scoreManto, subtipo:manto.subtype};
+  else if(scoreEscada >= 0.80) best = {group:'Estrutura', subtype:'em escada', score:scoreEscada};
+  else if(scoreEstruturaSimetrica >= 0.85) best = {group:'Estrutura', subtype:'simétrica', score:scoreEstruturaSimetrica};
+  else if(scoreCamadas >= 0.80 && layer.strongRows >= 4) best = {group:'Formação', subtype:'em camadas', score:scoreCamadas};
+  else if(scoreAlternancia >= 0.80) best = {group:'Formação', subtype:'alternada', score:scoreAlternancia};
+  else if(scoreSimetria >= 0.70 && scoreEstruturaSimetrica < 0.85 && scoreCamadas < 0.75) best = {group:'Formação', subtype:'simétrica', score:scoreSimetria};
+  else if(scoreFuro >= 0.60) best = {group:'Tapete', subtype:'furado ou rasgado', score:scoreFuro};
+  else if(scoreInicioOrdem >= 0.60) best = {group:'Tapete', subtype:'com início de ordem', score:scoreInicioOrdem};
+  else if(scoreDesequilibrio >= 0.55) best = {group:'Tapete', subtype:'desequilibrado', score:scoreDesequilibrio};
+  else {
+    const competing = Math.max(scoreCamadas, scoreSimetria, scoreAlternancia, scoreManto, scoreEscada, scoreFuro, scoreDesequilibrio);
+    best = {group:'Tapete', subtype:'puro', score:clamp01(1 - competing)};
+  }
+
+  const alternatives = [
+    {label:'formação em camadas', score:scoreCamadas},
+    {label:'formação simétrica', score:scoreSimetria},
+    {label:'formação alternada', score:scoreAlternancia},
+    {label:'estrutura em manto', score:scoreManto},
+    {label:'estrutura em escada', score:scoreEscada},
+    {label:'tapete furado ou rasgado', score:scoreFuro},
+    {label:'tapete desequilibrado', score:scoreDesequilibrio}
+  ].filter(item => item.label !== formalLabel(best)).sort((a,b)=>b.score-a.score);
+  if(alternatives[0] && alternatives[0].score >= 0.55 && alternatives[0].score < 0.75 && (best.score - alternatives[0].score) >= 0.10){
+    sinaisEspeciais.tendencia = `tendência à ${alternatives[0].label}`;
+  }
+
+  const confidence = round2(clamp01(best.score));
+  const indices = {
+    scoreCamadas: round2(scoreCamadas),
+    scoreSimetria: round2(scoreSimetria),
+    scoreAlternancia: round2(scoreAlternancia),
+    scoreManto: round2(scoreManto),
+    scoreEscada: round2(scoreEscada),
+    scoreDesequilibrio: round2(scoreDesequilibrio),
+    scoreFuro: round2(scoreFuro),
+    scoreInicioOrdem: round2(scoreInicioOrdem),
+    scoreDivisao: round2(scoreDivisao),
+    scoreMatizacao: round2(scoreMatizacao)
+  };
+  best.confidence = confidence;
+  best.confianca = confidence;
+  best.indices = indices;
+  best.sinaisEspeciais = sinaisEspeciais;
+  best.requerRevisaoHumana = confidence < 0.70;
+  return {best, indices, sinaisEspeciais, requerRevisaoHumana: best.requerRevisaoHumana};
 }
 
+function boardExecutionData(n){
+  const events = (boardSeq[n] || []).slice().sort((a,b)=>Number(a.step || 0) - Number(b.step || 0));
+  const unique = [];
+  const seen = new Set();
+  events.forEach(ev => {
+    const id = posId(ev.row, ev.col);
+    if(!seen.has(id)){ seen.add(id); unique.push(id); }
+  });
+  if(!unique.length){
+    const cells = finalCellsForBoard(n)
+      .filter(c => Number.isFinite(Number(c.step)) && Number(c.step) < 900)
+      .sort((a,b)=>Number(a.step)-Number(b.step));
+    cells.forEach(c => { if(!seen.has(c.id)){ seen.add(c.id); unique.push(c.id); } });
+  }
+  const corrections = events.filter(ev => ev.move || ev.swap).length;
+  return {
+    events,
+    uniqueSequence: unique,
+    labels: unique.map(posLabelFromId),
+    complete: unique.length === 15,
+    sequenceRegistered: unique.length >= 15,
+    corrections
+  };
+}
+function rankOrderSimilarity(seqA, seqB){
+  const common = seqA.filter(id => seqB.includes(id));
+  if(common.length < 2) return 0;
+  const rankB = new Map(seqB.map((id, idx)=>[id, idx]));
+  let total = 0, ok = 0;
+  for(let i=0;i<common.length;i++){
+    for(let j=i+1;j<common.length;j++){
+      total++;
+      if(rankB.get(common[i]) < rankB.get(common[j])) ok++;
+    }
+  }
+  return total ? ok / total : 0;
+}
+function sequenceSimilarity(seq, pattern){
+  if(!seq.length || !pattern.length) return 0;
+  const coverage = Math.min(seq.length, pattern.length) / pattern.length;
+  const positional = pattern.reduce((sum, id, idx)=>sum + (seq[idx] === id ? 1 : 0), 0) / pattern.length;
+  const order = rankOrderSimilarity(seq, pattern);
+  return clamp01((order * 0.70 + positional * 0.30) * coverage);
+}
+function pairwiseSequenceSimilarity(sequences){
+  const vals = [];
+  for(let i=0;i<sequences.length;i++){
+    for(let j=i+1;j<sequences.length;j++) vals.push(rankOrderSimilarity(sequences[i], sequences[j]));
+  }
+  return vals.length ? vals.reduce((a,b)=>a+b,0) / vals.length : 0;
+}
+function symmetricPlacementScore(seq){
+  if(seq.length < 6) return 0;
+  let near = 0;
+  PARES_SIMETRICOS.forEach(([a,b]) => {
+    const ia = seq.indexOf(a), ib = seq.indexOf(b);
+    if(ia >= 0 && ib >= 0 && Math.abs(ia - ib) <= 2) near++;
+  });
+  return near / PARES_SIMETRICOS.length;
+}
+function groupedSequenceScore(seq, groups){
+  const groupIndex = new Map();
+  groups.forEach((group, idx) => group.forEach(id => groupIndex.set(id, idx)));
+  const mapped = seq.map(id => groupIndex.get(id)).filter(v => Number.isFinite(v));
+  if(mapped.length < 2) return 0;
+  let ok = 0;
+  for(let i=1;i<mapped.length;i++){ if(mapped[i] >= mapped[i-1]) ok++; }
+  return ok / (mapped.length - 1);
+}
+function diagonalPlacementScore(seq){ return Math.max(groupedSequenceScore(seq, DIAGONAIS_ESQUERDA_DIREITA), groupedSequenceScore(seq, DIAGONAIS_DIREITA_ESQUERDA)); }
+function mantoPlacementScore(seq){
+  if(seq.length < 15) return 0;
+  const first = seq.slice(0, 12);
+  const last = seq.slice(-12);
+  const firstBorder = first.filter(id => BORDA_EXTERNA.has(id)).length / first.length;
+  const lastBorder = last.filter(id => BORDA_EXTERNA.has(id)).length / last.length;
+  return Math.max(firstBorder, lastBorder);
+}
+function spatialJumpScore(seq){
+  if(seq.length < 2) return 0;
+  let jumps = 0;
+  for(let i=1;i<seq.length;i++){
+    const [ar,ac] = seq[i-1].split('-').map(Number);
+    const [br,bc] = seq[i].split('-').map(Number);
+    if(Math.abs(ar-br) + Math.abs(ac-bc) >= 3) jumps++;
+  }
+  return jumps / (seq.length - 1);
+}
+function adjacentStepScore(seq){
+  if(seq.length < 2) return 0;
+  let adjacent = 0;
+  for(let i=1;i<seq.length;i++){
+    const [ar,ac] = seq[i-1].split('-').map(Number);
+    const [br,bc] = seq[i].split('-').map(Number);
+    if(Math.abs(ar-br) + Math.abs(ac-bc) <= 2) adjacent++;
+  }
+  return adjacent / (seq.length - 1);
+}
+function inferVerticalHorizontal(tipo){
+  if(tipo.startsWith('ascendente')) return {vertical:'Ascendente', horizontal:tipo.includes('inversa') ? 'Inversa' : (tipo.includes('alternada') ? 'Alternada' : 'Direta')};
+  if(tipo.startsWith('descendente')) return {vertical:'Descendente', horizontal:tipo.includes('inversa') ? 'Inversa' : (tipo.includes('alternada') ? 'Alternada' : 'Direta')};
+  if(tipo.includes('simétrica')) return {vertical:'Simétrica', horizontal:'Espelhada'};
+  if(tipo.includes('diagonal')) return {vertical:'Diagonal', horizontal:'Diagonal'};
+  if(tipo.includes('manto')) return {vertical:'Em manto', horizontal:'Borda/centro'};
+  if(tipo.includes('espacial')) return {vertical:'Espacial', horizontal:'Blocos/regiões'};
+  return {vertical:'Não avaliável', horizontal:'Não avaliável'};
+}
 function analyzePlacementForBoard(n){
   const grid = buildGridFromBoard(n);
-  const asp = decideAspect(grid).best;
-  const seq = (boardSeq[n]||[]).slice().sort((a,b)=> a.step-b.step);
-
-  function verticalBySecond(s){
-    if(s.length<2) return 'Mista';
-    const first = s[0];
-    let second = null;
-    for(let i=1;i<s.length;i++){ if(s[i].row!==first.row){ second = s[i]; break; } }
-    if(!second) return 'Mista';
-    if(second.row>first.row) return 'Descendente';
-    if(second.row<first.row) return 'Ascendente';
-    return 'Mista';
-  }
-  const vertical = verticalBySecond(seq);
-
-  let dirLR=0, dirRL=0;
-  for(let i=1;i<seq.length;i++){
-    const a=seq[i-1], b=seq[i];
-    if(a.row===b.row){ if(b.col>a.col) dirLR++; else if(b.col<a.col) dirRL++; }
-  }
-  let horizontal='Mista';
-  const totalMoves = dirLR + dirRL;
-  if(totalMoves>0){
-    const pctLR = dirLR/totalMoves, pctRL = dirRL/totalMoves;
-    if(pctLR>0.5) horizontal='Direta';
-    else if(pctRL>0.5) horizontal='Inversa';
-    else horizontal='Alternada';
+  const aspectAnalysis = decideAspect(grid);
+  const asp = aspectAnalysis.best;
+  const exec = boardExecutionData(n);
+  const seq = exec.uniqueSequence;
+  if(!exec.sequenceRegistered){
+    return {
+      tipo:'não avaliável',
+      vertical:'Não avaliável',
+      horizontal:'Não avaliável',
+      confidence:0,
+      confianca:0,
+      alternada:false,
+      simetrica:false,
+      diagonal:false,
+      mantoProcess:false,
+      espacial:false,
+      aspect:asp,
+      aspectAnalysis,
+      extras:['sequência de execução não registrada'],
+      requerRevisaoHumana:true,
+      sequenceLabels:exec.labels,
+      sequenceRegistered:false,
+      corrections:exec.corrections,
+      scores:{}
+    };
   }
 
-  function countExtremeConsecutivePairs(s){
-    let hits=0;
-    [3,4,5].forEach(r=>{
-      let cols=[];
-      s.forEach((p,idx)=>{ if(p.row===r && (p.col===1 || p.col===r)){ cols.push({col:p.col, idx}); } });
-      if(cols.length>=2){
-        for(let i=0;i<cols.length-1;i++){
-          const a=cols[i], b=cols[i+1];
-          if(Math.abs(a.idx-b.idx)===1 && ((a.col===1 && b.col===r) || (a.col===r && b.col===1))){ hits++; break; }
-        }
-      }
-    });
-    return hits;
+  const patternScores = [
+    {tipo:'ascendente direta', score:sequenceSimilarity(seq, ASCENDENTE_DIRETA)},
+    {tipo:'ascendente inversa', score:sequenceSimilarity(seq, ASCENDENTE_INVERSA)},
+    {tipo:'ascendente alternada', score:sequenceSimilarity(seq, ASCENDENTE_ALTERNADA)},
+    {tipo:'descendente direta', score:sequenceSimilarity(seq, DESCENDENTE_DIRETA)},
+    {tipo:'descendente inversa', score:sequenceSimilarity(seq, DESCENDENTE_INVERSA)},
+    {tipo:'descendente alternada', score:sequenceSimilarity(seq, DESCENDENTE_ALTERNADA)}
+  ].sort((a,b)=>b.score-a.score);
+  const bestLinear = patternScores[0];
+  const scoreSimetrica = symmetricPlacementScore(seq);
+  const scoreDiagonal = diagonalPlacementScore(seq);
+  const scoreManto = mantoPlacementScore(seq);
+  const scoreEspacial = adjacentStepScore(seq);
+  const scoreSaltos = spatialJumpScore(seq);
+
+  let tipo = bestLinear.score >= 0.75 ? bestLinear.tipo : null;
+  let confidence = bestLinear.score;
+  let requerRevisaoHumana = false;
+  if(!tipo && scoreSimetrica >= 0.65){ tipo = 'colocação simétrica'; confidence = scoreSimetrica; }
+  if(!tipo && scoreDiagonal >= 0.70){ tipo = 'colocação diagonal'; confidence = scoreDiagonal; }
+  if(!tipo && scoreManto >= 0.70){ tipo = 'colocação em manto'; confidence = scoreManto; }
+  if(!tipo && scoreEspacial >= 0.65){
+    tipo = 'possível colocação espacial';
+    confidence = scoreEspacial;
+    requerRevisaoHumana = true;
   }
-  const simetrica = countExtremeConsecutivePairs(seq) >= 2;
-
-  const filledSet = new Set((BOARDS_STATE[n]?.cells||[]).map(c=>{
-    const [r,c2] = c.slot.split('-').map(Number); return `${r}-${c2}`; }));
-  const diagCol1 = [1,2,3,4,5].every(r=> filledSet.has(`${r}-1`));
-  const diagMain = [1,2,3,4,5].every(r=> filledSet.has(`${r}-${r}`));
-  const diagonal = diagCol1 || diagMain;
-
-  function isPerimeter(r,c){ return (c===1 || c===r || r===5); }
-  const steps = seq.map((p,i)=> ({...p, idx:i}));
-  const perimIdx = steps.filter(p=> isPerimeter(p.row,p.col)).map(p=>p.idx);
-  const innerIdx = steps.filter(p=> !isPerimeter(p.row,p.col)).map(p=>p.idx);
-  let mantoProcess = false;
-  if(innerIdx.length>0 && perimIdx.length>0){
-    const firstInner = Math.min(...innerIdx);
-    const lastPerim  = Math.max(...perimIdx);
-    if(lastPerim < firstInner) mantoProcess = true;
+  if(!tipo){
+    tipo = 'modo de colocação não reconhecido';
+    confidence = Math.max(bestLinear.score, scoreSimetrica, scoreDiagonal, scoreManto, scoreEspacial);
+    requerRevisaoHumana = true;
   }
 
+  const vh = inferVerticalHorizontal(tipo);
   const extras = [];
-  if(simetrica) extras.push('Simétrica (extremos)');
-  if(diagonal) extras.push('Diagonal');
-  if(mantoProcess) extras.push('Em manto (processo)');
+  if(scoreSimetrica >= 0.65 && tipo !== 'colocação simétrica') extras.push('simetria no modo');
+  if(scoreDiagonal >= 0.70 && tipo !== 'colocação diagonal') extras.push('diagonal no modo');
+  if(scoreManto >= 0.70 && tipo !== 'colocação em manto') extras.push('manto no modo');
+  if(exec.corrections > 0) extras.push(`${exec.corrections} ajuste(s)/troca(s)`);
+  if(confidence < 0.65) requerRevisaoHumana = true;
 
-  return {vertical, horizontal, alternada: horizontal==='Alternada', simetrica, diagonal, mantoProcess, aspect: asp, extras};
+  return {
+    tipo,
+    vertical:vh.vertical,
+    horizontal:vh.horizontal,
+    confidence:round2(confidence),
+    confianca:round2(confidence),
+    alternada:tipo.includes('alternada'),
+    simetrica:scoreSimetrica >= 0.65,
+    diagonal:scoreDiagonal >= 0.70,
+    mantoProcess:scoreManto >= 0.70,
+    espacial:tipo.includes('espacial'),
+    aspect:asp,
+    aspectAnalysis,
+    extras,
+    requerRevisaoHumana,
+    sequenceLabels:exec.labels,
+    sequenceRegistered:true,
+    corrections:exec.corrections,
+    scores:{
+      melhorLinear:round2(bestLinear.score),
+      simetrica:round2(scoreSimetrica),
+      diagonal:round2(scoreDiagonal),
+      manto:round2(scoreManto),
+      espacial:round2(scoreEspacial),
+      saltosEspaciais:round2(scoreSaltos)
+    }
+  };
 }
 
 /* ---------------- UI: análise ao vivo (opcional) ---------------- */
@@ -519,8 +871,8 @@ function renderAnalysisActive(){
   if(!SHOW_LIVE_ANALYSIS) return;
   const placement = analyzePlacementForBoard(activeBoard);
   const extrasTxt = placement.extras.length ? ' • ' + placement.extras.join(' • ') : '';
-  analysisEl.innerHTML = `<div><b>Modo de colocação</b>: ${placement.vertical} — ${placement.horizontal}${extrasTxt}</div>
-    <div><b>Aspecto</b>: ${placement.aspect.group} — ${placement.aspect.subtype}</div>`;
+  analysisEl.innerHTML = `<div><b>Modo de colocação</b>: ${placement.tipo} <span class="small">(confiança ${Math.round(placement.confidence * 100)}%)</span>${extrasTxt}</div>
+    <div><b>Aspecto formal</b>: ${placement.aspect.group} — ${placement.aspect.subtype} <span class="small">(confiança ${Math.round((placement.aspect.confidence || 0) * 100)}%)</span></div>`;
 }
 
 /* ---------------- Construção da pirâmide ativa ---------------- */
@@ -556,15 +908,12 @@ function buildActivePyramid(){
 /* ---------------- Resumo/Percentuais ---------------- */
 function summarizeBoard(n){
   const cells = (BOARDS_STATE[n]?.cells)||[]; const counts = {}; cells.forEach(c=> counts[c.key] = (counts[c.key]||0)+1);
-  const grid = buildGridFromBoard(n); const aspect = decideAspect(grid).best; const placement = analyzePlacementForBoard(n);
-  return {counts, aspect, placement};
+  const grid = buildGridFromBoard(n); const aspectAnalysis = decideAspect(grid); const aspect = aspectAnalysis.best; const placement = analyzePlacementForBoard(n);
+  return {counts, aspect, aspectAnalysis, placement};
 }
 
 function placementSequenceLabels(n){
-  const seq = (boardSeq[n]||[])
-    .filter(s=> !s.move && !s.swap)
-    .sort((a,b)=> a.step-b.step);
-  return seq.map(s=> s.label.toLowerCase());
+  return boardExecutionData(n).labels.map(label => label.toLowerCase());
 }
 
 function overallColorCounts(){
@@ -704,13 +1053,49 @@ function combinedPyramidsCanvas(){
 
 
 /* ---------------- Categoria / Payload / Envio ---------------- */
+function percentText(value){ return `${Math.round((Number(value) || 0) * 100)}%`; }
+function yesNo(value){ return value ? 'sim' : 'não'; }
+function sinaisEspeciaisTexto(sinais){
+  if(!sinais) return 'Nenhum';
+  const parts = [];
+  if(sinais.divisao) parts.push('divisão');
+  if(sinais.corteOuMutilacao) parts.push('corte ou mutilação');
+  if(sinais.matizacao) parts.push('matização');
+  if(sinais.tendencia) parts.push(sinais.tendencia);
+  return parts.length ? parts.join(' • ') : 'Nenhum';
+}
+function aspectoFormalTexto(aspect){
+  const subtipo = aspect.subtipo ? ` (${aspect.subtipo})` : '';
+  return `${aspect.group} — ${aspect.subtype}${subtipo}`;
+}
+function requerRevisaoBoard(summary){
+  return !!(summary?.placement?.requerRevisaoHumana || summary?.aspect?.requerRevisaoHumana);
+}
+function analiseConjuntoFormal(){
+  const summaries = [1,2,3].map(i => summarizeBoard(i));
+  const sequenciaFormal = summaries.map(s => formalLabel(s.aspect));
+  const niveis = sequenciaFormal.map(label => NIVEL_ORGANIZACAO[label] || 0);
+  let evolucaoFormal = 'oscilação formal entre as pirâmides';
+  if(niveis[0] < niveis[1] && niveis[1] <= niveis[2]) evolucaoFormal = 'organização progressiva';
+  else if(niveis[0] > niveis[1] && niveis[1] >= niveis[2]) evolucaoFormal = 'redução progressiva da organização';
+  else if(niveis[0] === niveis[1] && niveis[1] === niveis[2]) evolucaoFormal = 'padrão formal constante';
+  const grandeVariacao = Math.max(...niveis) - Math.min(...niveis) >= 1.5;
+  if(grandeVariacao && evolucaoFormal === 'oscilação formal entre as pirâmides') evolucaoFormal = 'oscilação formal importante entre as pirâmides';
+  return {
+    sequenciaFormal,
+    niveis,
+    evolucaoFormal,
+    requerRevisaoHumana: summaries.some(requerRevisaoBoard)
+  };
+}
 function buildCategoriasString(){
   const proc = processoExecucao();
-  const parts = [`Processo: ${proc.tipo}`];
+  const conjunto = analiseConjuntoFormal();
+  const parts = [`Processo: ${proc.tipo}`, `Evolução formal: ${conjunto.evolucaoFormal}`];
   for(let i=1;i<=3;i++){
     const {aspect, placement} = summarizeBoard(i);
     const extras = placement.extras.length ? ` (${placement.extras.join(' • ')})` : '';
-    parts.push(`B${i}: ${aspect.group}/${aspect.subtype} — ${placement.vertical}/${placement.horizontal}${extras}`);
+    parts.push(`B${i}: ${aspectoFormalTexto(aspect)} — ${placement.tipo}${extras}`);
   }
   return parts.join(' | ');
 }
@@ -895,14 +1280,51 @@ async function uploadCombinedImageToSupabase(cpf, testCode, submittedAt) {
   };
 }
 
+function indicesAspectoTexto(indices){
+  if(!indices) return '—';
+  return [
+    `camadas ${indices.scoreCamadas}`,
+    `simetria ${indices.scoreSimetria}`,
+    `alternância ${indices.scoreAlternancia}`,
+    `manto ${indices.scoreManto}`,
+    `escada ${indices.scoreEscada}`,
+    `furo ${indices.scoreFuro}`,
+    `desequilíbrio ${indices.scoreDesequilibrio}`
+  ].join(' | ');
+}
+function escoresModoTexto(scores){
+  if(!scores || !Object.keys(scores).length) return '—';
+  return [
+    `linear ${scores.melhorLinear}`,
+    `simétrica ${scores.simetrica}`,
+    `diagonal ${scores.diagonal}`,
+    `manto ${scores.manto}`,
+    `espacial ${scores.espacial}`,
+    `saltos ${scores.saltosEspaciais}`
+  ].join(' | ');
+}
+function boardResultItems(boardNumber, summary){
+  const aspect = summary.aspect;
+  const placement = summary.placement;
+  return [
+    { pergunta: `Pirâmide ${boardNumber} - Aspecto formal`, resposta: aspectoFormalTexto(aspect) },
+    { pergunta: `Pirâmide ${boardNumber} - Confiança do aspecto formal`, resposta: percentText(aspect.confidence) },
+    { pergunta: `Pirâmide ${boardNumber} - Sinais especiais`, resposta: sinaisEspeciaisTexto(aspect.sinaisEspeciais) },
+    { pergunta: `Pirâmide ${boardNumber} - Índices formais`, resposta: indicesAspectoTexto(aspect.indices) },
+    { pergunta: `Pirâmide ${boardNumber} - Modo de colocação`, resposta: placement.tipo },
+    { pergunta: `Pirâmide ${boardNumber} - Confiança do modo de colocação`, resposta: percentText(placement.confidence) },
+    { pergunta: `Pirâmide ${boardNumber} - Escores do modo de colocação`, resposta: escoresModoTexto(placement.scores) },
+    { pergunta: `Pirâmide ${boardNumber} - Ajustes ou trocas`, resposta: placement.corrections },
+    { pergunta: `Pirâmide ${boardNumber} - Revisão humana`, resposta: yesNo(requerRevisaoBoard(summary)) },
+    { pergunta: `Pirâmide ${boardNumber} - Ordem de colocação`, resposta: placement.sequenceLabels?.join(', ') || 'não registrada' }
+  ];
+}
 function buildResultsPerguntasRespostasPfister(imageUrl = null) {
   const { byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
-
-  const p1 = analyzePlacementForBoard(1);
-  const p2 = analyzePlacementForBoard(2);
-  const p3 = analyzePlacementForBoard(3);
+  const conjunto = analiseConjuntoFormal();
+  const summaries = [1,2,3].map(i => summarizeBoard(i));
 
   const perguntasRespostas = [
     { pergunta: "Azul (%)", resposta: round1(idx.pct_azul) },
@@ -921,15 +1343,14 @@ function buildResultsPerguntasRespostasPfister(imageUrl = null) {
     { pergunta: "Incolor (%)", resposta: round1(idx.incolor_pct) },
     { pergunta: "Processo de execução", resposta: proc.tipo },
     { pergunta: "Descrição do processo", resposta: proc.desc },
-    { pergunta: "Pirâmide 1 - Vertical", resposta: p1.vertical },
-    { pergunta: "Pirâmide 1 - Horizontal", resposta: p1.horizontal },
-    { pergunta: "Pirâmide 1 - Extras", resposta: p1.extras?.join(" | ") || "Nenhum" },
-    { pergunta: "Pirâmide 2 - Vertical", resposta: p2.vertical },
-    { pergunta: "Pirâmide 2 - Horizontal", resposta: p2.horizontal },
-    { pergunta: "Pirâmide 2 - Extras", resposta: p2.extras?.join(" | ") || "Nenhum" },
-    { pergunta: "Pirâmide 3 - Vertical", resposta: p3.vertical },
-    { pergunta: "Pirâmide 3 - Horizontal", resposta: p3.horizontal },
-    { pergunta: "Pirâmide 3 - Extras", resposta: p3.extras?.join(" | ") || "Nenhum" },
+    { pergunta: "Similaridade sequencial média", resposta: proc.similaridadeSequencialMedia },
+    { pergunta: "Total de ajustes/trocas", resposta: proc.totalTrocas },
+    { pergunta: "Revisão humana do processo", resposta: yesNo(proc.requerRevisaoHumana) },
+    { pergunta: "Evolução formal", resposta: conjunto.evolucaoFormal },
+    { pergunta: "Sequência formal", resposta: conjunto.sequenciaFormal.join(' | ') },
+    ...boardResultItems(1, summaries[0]),
+    ...boardResultItems(2, summaries[1]),
+    ...boardResultItems(3, summaries[2]),
     { pergunta: "Imagem", resposta: imageUrl }
   ];
 
@@ -940,10 +1361,12 @@ function buildResultsMetaPfister() {
   const { total, byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
+  const conjunto = analiseConjuntoFormal();
 
   return {
     total_elementos: total,
     processo_execucao: proc,
+    conjunto,
     percentuais_cores: byColor,
     indices: idx,
     boards: {
@@ -962,16 +1385,92 @@ function buildResultsMetaPfister() {
 
 /* ---------------- Processo/Resumo ---------------- */
 function processoExecucao(){
-  const p = [1,2,3].map(i=> analyzePlacementForBoard(i));
-  const pairs = p.map(x=> `${x.vertical}/${x.horizontal}`);
-  const allEqual = pairs.every(v=> v===pairs[0]);
-  const majority = (arr)=>{ const m={}; arr.forEach(v=> m[v]=(m[v]||0)+1); let best=null; for(const k in m){ if(!best||m[k]>m[best]) best=k;} return {key:best,count:m[best]}; };
-  const maj = majority(pairs);
-  const relax = p.filter(x=> x.aspect.group==='Tapete' && (x.horizontal==='Mista' || x.vertical==='Mista')).length;
-  if(allEqual) return {tipo:'Metódica/sistemática', desc:'repete o mesmo modo nas 3 pirâmides; trabalho organizado, planejado e rígido.'};
-  if(relax>=2) return {tipo:'Relaxada', desc:'exageradamente desorganizada, escolhas aleatórias; pouca preocupação com precisão.'};
-  if(maj.count>=2) return {tipo:'Ordenada', desc:'há padrão lógico e constância com pequenas variações.'};
-  return {tipo:'Desordenada', desc:'muda muito entre pirâmides e ritmo; difícil acompanhar; pode soar ansioso.'};
+  const placements = [1,2,3].map(i=> analyzePlacementForBoard(i));
+  const execData = [1,2,3].map(i => boardExecutionData(i));
+  const hasAllSequences = execData.every(x => x.sequenceRegistered);
+  const modos = placements.map(x => x.tipo);
+  const modoReconhecivel = placements.map(x => x.sequenceRegistered && x.confidence >= 0.65 && !x.tipo.includes('não'));
+  const mediaModoReconhecivel = round2(placements.reduce((sum, x) => sum + (x.confidence || 0), 0) / placements.length);
+  const similaridadeSequencialMedia = round2(pairwiseSequenceSimilarity(execData.map(x => x.uniqueSequence)));
+  const totalTrocas = placements.reduce((sum, x) => sum + (x.corrections || 0), 0);
+  const modosDiferentesEntrePiramides = new Set(modos).size;
+  const mesmoModoEmP1P2P3 = modos.every(m => m === modos[0]);
+  const saltosEspaciaisMedios = round2(placements.reduce((sum, x) => sum + (x.scores?.saltosEspaciais || 0), 0) / placements.length);
+  const baixaOrganizacaoFormal = placements.filter(x => formalLabel(x.aspect).startsWith('tapete')).length;
+  const observacoes = ['Ritmo, pausas longas, hesitação e comentários não são registrados por este formulário.'];
+
+  if(!hasAllSequences){
+    return {
+      tipo:'não avaliável',
+      desc:'não há sequência de execução completa registrada nas três pirâmides; o código não deve inferir processo de execução pela imagem final.',
+      modos: {P1:modos[0], P2:modos[1], P3:modos[2]},
+      similaridadeSequencialMedia,
+      mediaModoReconhecivel,
+      totalTrocas,
+      modosDiferentesEntrePiramides,
+      requerRevisaoHumana:true,
+      observacoes
+    };
+  }
+
+  if(
+    modoReconhecivel.filter(Boolean).length < 2 &&
+    similaridadeSequencialMedia < 0.30 &&
+    saltosEspaciaisMedios >= 0.60 &&
+    baixaOrganizacaoFormal >= 2
+  ){
+    return {
+      tipo:'possível execução relaxada',
+      desc:'há baixa constância sequencial, muitos saltos espaciais e baixa organização formal em duas ou mais pirâmides; sinalização exige revisão clínica.',
+      modos: {P1:modos[0], P2:modos[1], P3:modos[2]},
+      similaridadeSequencialMedia,
+      mediaModoReconhecivel,
+      totalTrocas,
+      modosDiferentesEntrePiramides,
+      requerRevisaoHumana:true,
+      observacoes
+    };
+  }
+
+  if(mesmoModoEmP1P2P3 && similaridadeSequencialMedia >= 0.85 && totalTrocas <= 2){
+    return {
+      tipo:'execução metódica ou sistemática',
+      desc:'mantém praticamente o mesmo caminho de construção nas três pirâmides, com baixa variação sequencial e poucos ajustes.',
+      modos: {P1:modos[0], P2:modos[1], P3:modos[2]},
+      similaridadeSequencialMedia,
+      mediaModoReconhecivel,
+      totalTrocas,
+      modosDiferentesEntrePiramides,
+      requerRevisaoHumana:placements.some(x => x.requerRevisaoHumana),
+      observacoes
+    };
+  }
+
+  if(mediaModoReconhecivel >= 0.65 && similaridadeSequencialMedia >= 0.55 && totalTrocas <= 6){
+    return {
+      tipo:'execução ordenada',
+      desc:'há padrão geral reconhecível e constância suficiente entre as pirâmides, com flexibilidade e pequenas variações.',
+      modos: {P1:modos[0], P2:modos[1], P3:modos[2]},
+      similaridadeSequencialMedia,
+      mediaModoReconhecivel,
+      totalTrocas,
+      modosDiferentesEntrePiramides,
+      requerRevisaoHumana:placements.some(x => x.requerRevisaoHumana),
+      observacoes
+    };
+  }
+
+  return {
+    tipo:'execução desordenada',
+    desc:'há variação importante no modo de fazer as pirâmides, baixa similaridade sequencial ou número elevado de ajustes; isso descreve o processo, não a qualidade formal final.',
+    modos: {P1:modos[0], P2:modos[1], P3:modos[2]},
+    similaridadeSequencialMedia,
+    mediaModoReconhecivel,
+    totalTrocas,
+    modosDiferentesEntrePiramides,
+    requerRevisaoHumana:placements.some(x => x.requerRevisaoHumana),
+    observacoes
+  };
 }
 
 function showSummary() {
@@ -982,16 +1481,21 @@ function showSummary() {
   body.innerHTML = '';
 
   const proc = processoExecucao();
+  const conjunto = analiseConjuntoFormal();
   const header = document.createElement('div');
   header.className = 'row';
   header.innerHTML = `<div><b>Processo de execução</b>: ${proc.tipo}</div>
-                      <div style="margin-top:4px">${proc.desc}</div>`;
+                      <div style="margin-top:4px">${proc.desc}</div>
+                      <div style="margin-top:4px"><b>Similaridade sequencial média</b>: ${proc.similaridadeSequencialMedia} • <b>Ajustes/trocas</b>: ${proc.totalTrocas}</div>
+                      <div style="margin-top:4px"><b>Evolução formal</b>: ${conjunto.evolucaoFormal}</div>
+                      <div style="margin-top:4px"><b>Revisão humana</b>: ${yesNo(proc.requerRevisaoHumana || conjunto.requerRevisaoHumana)}</div>`;
   body.appendChild(header);
 
   renderOverallPercentagesRow();
 
   for (let i = 1; i <= 3; i++) {
-    const {counts, aspect, placement} = summarizeBoard(i);
+    const summary = summarizeBoard(i);
+    const {counts, aspect, placement} = summary;
     const seqLabels = placementSequenceLabels(i).join(', ');
     const colorList = Object.keys(counts).sort()
       .map(k => `${k}: ${counts[k]}`).join(' • ') || '—';
@@ -1000,8 +1504,10 @@ function showSummary() {
     box.className = 'row';
     const extrasTxt = placement.extras.length ? ' • ' + placement.extras.join(' • ') : '';
     box.innerHTML = `<div><b>Pirâmide ${i}</b></div>
-      <div style="margin-top:4px"><b>Modo de colocação</b>: ${placement.vertical} — ${placement.horizontal}${extrasTxt}</div>
-      <div style="margin-top:4px"><b>Aspecto</b>: ${aspect.group} — ${aspect.subtype}</div>
+      <div style="margin-top:4px"><b>Modo de colocação</b>: ${placement.tipo} <span class="small">(confiança ${percentText(placement.confidence)})</span>${extrasTxt}</div>
+      <div style="margin-top:4px"><b>Aspecto formal</b>: ${aspectoFormalTexto(aspect)} <span class="small">(confiança ${percentText(aspect.confidence)})</span></div>
+      <div style="margin-top:4px"><b>Sinais especiais</b>: ${sinaisEspeciaisTexto(aspect.sinaisEspeciais)}</div>
+      <div style="margin-top:4px"><b>Revisão humana</b>: ${yesNo(requerRevisaoBoard(summary))}</div>
       <div style="margin-top:4px"><b>Cores (quantidade)</b>: ${colorList}</div>
       <div style="margin-top:4px"><b>Ordem de colocação</b>: ${seqLabels || '—'}</div>`;
     body.appendChild(box);
