@@ -158,6 +158,7 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_
 const TEST_CODE_FIXO = "PFISTER_V2";
 const STORAGE_BUCKET = "test-images";
 const AREA_PACIENTE_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
+const PFISTER_AI_FUNCTION = "classificar-pfister-aspecto-formal";
 
 /* guarda rascunho (stub) */
 function saveDraft(){ /* no-op */ }
@@ -1172,7 +1173,11 @@ async function sendResults() {
     if (statusEl) statusEl.textContent = "Enviando imagem...";
 
     const uploadResult = await uploadCombinedImageToSupabase(cpf, testCode, submittedAt);
-    const resultsPayload = buildResultsPerguntasRespostasPfister(uploadResult.imageUrl);
+    if (statusEl) statusEl.textContent = "Classificando aspecto formal pela imagem...";
+
+    const aiClassification = await classificarAspectoFormalPorIA(uploadResult.imageUrl);
+    const resultsPayload = buildResultsPerguntasRespostasPfister(uploadResult.imageUrl, aiClassification);
+    const resultsMetaPayload = buildResultsMetaPfister(aiClassification);
 
     if (statusEl) statusEl.textContent = "Salvando respostas...";
 
@@ -1184,6 +1189,7 @@ async function sendResults() {
           code: testCode,
           submitted_at: submittedAt,
           results: resultsPayload,
+          results_meta: resultsMetaPayload,
           image_url: uploadResult.imageUrl,
           image_path: uploadResult.imagePath
         }
@@ -1280,6 +1286,57 @@ async function uploadCombinedImageToSupabase(cpf, testCode, submittedAt) {
   };
 }
 
+async function classificarAspectoFormalPorIA(imageUrl) {
+  if (!imageUrl) {
+    return {
+      ok: false,
+      error: "Imagem pública não disponível para classificação automática.",
+      output_text: "",
+      classificacao: { P1: null, P2: null, P3: null }
+    };
+  }
+
+  try {
+    const { data, error } = await supabaseClient.functions.invoke(PFISTER_AI_FUNCTION, {
+      body: {
+        image_url: imageUrl,
+        token: getTokenFromUrl(),
+        test_code: getTestCodeFromUrl(),
+        cpf: getCpfFromUrl()
+      }
+    });
+
+    if (error) {
+      throw new Error(error.message || "Falha ao chamar Edge Function de classificação.");
+    }
+
+    return {
+      ok: !!data?.ok,
+      error: data?.error || null,
+      model: data?.model || null,
+      output_text: data?.output_text || "",
+      classificacao: {
+        P1: data?.classificacao?.P1 || null,
+        P2: data?.classificacao?.P2 || null,
+        P3: data?.classificacao?.P3 || null
+      }
+    };
+  } catch (err) {
+    console.error("Falha na classificação automática do Pfister:", err);
+    return {
+      ok: false,
+      error: err?.message || "Falha ao classificar aspecto formal automaticamente.",
+      output_text: "",
+      classificacao: { P1: null, P2: null, P3: null }
+    };
+  }
+}
+
+function aiClassificacaoTexto(aiClassification) {
+  const cls = aiClassification?.classificacao || {};
+  return `P1: ${cls.P1 || "não classificado"}; P2: ${cls.P2 || "não classificado"}; P3: ${cls.P3 || "não classificado"}.`;
+}
+
 function indicesAspectoTexto(indices){
   if(!indices) return '—';
   return [
@@ -1319,7 +1376,7 @@ function boardResultItems(boardNumber, summary){
     { pergunta: `Pirâmide ${boardNumber} - Ordem de colocação`, resposta: placement.sequenceLabels?.join(', ') || 'não registrada' }
   ];
 }
-function buildResultsPerguntasRespostasPfister(imageUrl = null) {
+function buildResultsPerguntasRespostasPfister(imageUrl = null, aiClassification = null) {
   const { byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
@@ -1348,6 +1405,13 @@ function buildResultsPerguntasRespostasPfister(imageUrl = null) {
     { pergunta: "Revisão humana do processo", resposta: yesNo(proc.requerRevisaoHumana) },
     { pergunta: "Evolução formal", resposta: conjunto.evolucaoFormal },
     { pergunta: "Sequência formal", resposta: conjunto.sequenciaFormal.join(' | ') },
+    { pergunta: "Aspecto formal por IA - status", resposta: aiClassification?.ok ? "classificado" : "não classificado" },
+    { pergunta: "Aspecto formal por IA - categorias", resposta: aiClassificacaoTexto(aiClassification) },
+    { pergunta: "Aspecto formal por IA - P1", resposta: aiClassification?.classificacao?.P1 || "" },
+    { pergunta: "Aspecto formal por IA - P2", resposta: aiClassification?.classificacao?.P2 || "" },
+    { pergunta: "Aspecto formal por IA - P3", resposta: aiClassification?.classificacao?.P3 || "" },
+    { pergunta: "Aspecto formal por IA - retorno bruto", resposta: aiClassification?.output_text || "" },
+    { pergunta: "Aspecto formal por IA - erro", resposta: aiClassification?.error || "" },
     ...boardResultItems(1, summaries[0]),
     ...boardResultItems(2, summaries[1]),
     ...boardResultItems(3, summaries[2]),
@@ -1357,7 +1421,7 @@ function buildResultsPerguntasRespostasPfister(imageUrl = null) {
   return perguntasRespostas;
 }
 
-function buildResultsMetaPfister() {
+function buildResultsMetaPfister(aiClassification = null) {
   const { total, byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
@@ -1367,6 +1431,7 @@ function buildResultsMetaPfister() {
     total_elementos: total,
     processo_execucao: proc,
     conjunto,
+    aspecto_formal_ia: aiClassification,
     percentuais_cores: byColor,
     indices: idx,
     boards: {
