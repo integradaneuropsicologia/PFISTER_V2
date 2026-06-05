@@ -3,6 +3,7 @@ const OPENAI_MODEL = Deno.env.get("OPENAI_PFISTER_MODEL") || "gpt-5.4-mini";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const TEST_CODE = "PFISTER_V2";
+const STORAGE_BUCKET = "test-images";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -129,6 +130,52 @@ function parseClassification(text: string) {
   return out;
 }
 
+function encodeStoragePath(path: string) {
+  return String(path || "")
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function dataUrlToBytes(dataUrl: string) {
+  const match = String(dataUrl || "").match(/^data:(image\/png|image\/jpeg|image\/webp);base64,(.+)$/i);
+  if (!match) throw new Error("Imagem em base64 inválida.");
+  const contentType = match[1].toLowerCase();
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return { contentType, bytes };
+}
+
+async function uploadImageToStorage(imagePath: string, dataUrl: string) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) throw new Error("Supabase service role não configurada.");
+  const safePath = encodeStoragePath(imagePath);
+  if (!safePath.endsWith(".png")) throw new Error("Caminho da imagem inválido.");
+  const { contentType, bytes } = dataUrlToBytes(dataUrl);
+
+  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${safePath}`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "apikey": SUPABASE_SERVICE_ROLE_KEY,
+      "Content-Type": contentType,
+      "x-upsert": "false",
+    },
+    body: bytes,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Erro ao enviar imagem ao Storage: ${text || response.statusText}`);
+  }
+
+  return {
+    imagePath,
+    imageUrl: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${safePath}`,
+  };
+}
+
 async function validatePatientToken(token: string, testCode: string) {
   if (!token || testCode !== TEST_CODE) return { ok: false, error: "Token ou formulário inválido." };
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return { ok: false, error: "Supabase service role não configurada." };
@@ -161,12 +208,21 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const imageUrl = String(body?.image_url || body?.imageUrl || "").trim();
+    let imageUrl = String(body?.image_url || body?.imageUrl || "").trim();
+    let imagePath = String(body?.image_path || body?.imagePath || "").trim();
+    const imageDataUrl = String(body?.image_data_url || body?.imageDataUrl || "").trim();
     const token = String(body?.token || "").trim();
     const testCode = String(body?.test_code || body?.code || "").trim();
 
     const access = await validatePatientToken(token, testCode);
     if (!access.ok) return jsonResponse({ error: access.error }, 401);
+
+    if (imageDataUrl) {
+      imagePath = imagePath || `${access.cpf || "sem-cpf"}/${TEST_CODE}/${Date.now()}.png`;
+      const uploaded = await uploadImageToStorage(imagePath, imageDataUrl);
+      imagePath = uploaded.imagePath;
+      imageUrl = uploaded.imageUrl;
+    }
 
     if (!/^https?:\/\//i.test(imageUrl)) {
       return jsonResponse({ error: "image_url pública é obrigatória." }, 400);
@@ -208,6 +264,7 @@ Deno.serve(async (req) => {
       model: OPENAI_MODEL,
       output_text: outputText,
       classificacao,
+      image_path: imagePath || null,
       image_url: imageUrl,
     });
   } catch (err) {

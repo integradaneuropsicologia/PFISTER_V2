@@ -1170,12 +1170,10 @@ async function sendResults() {
     if (!allBoardsComplete()) throw new Error("Finalize as 3 pirâmides.");
 
     hideBox("#alert");
-    if (statusEl) statusEl.textContent = "Enviando imagem...";
+    if (statusEl) statusEl.textContent = "Enviando imagem e classificando aspecto formal...";
 
     const uploadResult = await uploadCombinedImageToSupabase(cpf, testCode, submittedAt);
-    if (statusEl) statusEl.textContent = "Classificando aspecto formal pela imagem...";
-
-    const aiClassification = await classificarAspectoFormalPorIA(uploadResult.imageUrl);
+    const aiClassification = uploadResult.aiClassification;
     const resultsPayload = buildResultsPerguntasRespostasPfister(uploadResult.imageUrl, aiClassification);
     const resultsMetaPayload = buildResultsMetaPfister(aiClassification);
 
@@ -1258,31 +1256,41 @@ function buildImagePath(cpf, testCode, submittedAt) {
 async function uploadCombinedImageToSupabase(cpf, testCode, submittedAt) {
   const canvas = combinedPyramidsCanvas();
   const dataUrl = canvas.toDataURL("image/png");
-  const blob = dataURLToBlob(dataUrl);
-
   const imagePath = buildImagePath(cpf, testCode, submittedAt);
 
-  const { error: uploadError } = await supabaseClient
-    .storage
-    .from(STORAGE_BUCKET)
-    .upload(imagePath, blob, {
-      contentType: "image/png",
-      upsert: false
-    });
+  const { data, error } = await supabaseClient.functions.invoke(PFISTER_AI_FUNCTION, {
+    body: {
+      image_data_url: dataUrl,
+      image_path: imagePath,
+      token: getTokenFromUrl(),
+      test_code: testCode,
+      cpf
+    }
+  });
 
-  if (uploadError) {
-    console.error(uploadError);
-    throw new Error(`Erro ao enviar imagem ao Storage: ${uploadError.message}`);
+  if (error) {
+    console.error(error);
+    throw new Error(`Erro ao processar imagem: ${error.message || "falha na Edge Function"}`);
   }
 
-  const { data: publicData } = supabaseClient
-    .storage
-    .from(STORAGE_BUCKET)
-    .getPublicUrl(imagePath);
+  if (data?.error) {
+    throw new Error(data.error);
+  }
 
   return {
-    imagePath,
-    imageUrl: publicData?.publicUrl || null
+    imagePath: data?.image_path || imagePath,
+    imageUrl: data?.image_url || null,
+    aiClassification: {
+      ok: !!data?.ok,
+      error: data?.error || null,
+      model: data?.model || null,
+      output_text: data?.output_text || "",
+      classificacao: {
+        P1: data?.classificacao?.P1 || null,
+        P2: data?.classificacao?.P2 || null,
+        P3: data?.classificacao?.P3 || null
+      }
+    }
   };
 }
 
