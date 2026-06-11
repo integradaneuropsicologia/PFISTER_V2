@@ -1176,7 +1176,7 @@ async function sendResults() {
     if (statusEl) statusEl.textContent = "Enviando imagem e classificando aspecto formal...";
 
     const uploadResult = await uploadCombinedImageToSupabase(cpf, testCode, submittedAt);
-    const resultsMetaPayload = buildResultsMetaPfister(uploadResult.imageUrl, uploadResult.imagePath);
+    const resultsMetaPayload = buildResultsMetaPfister(uploadResult.imageUrl, uploadResult.imagePath, uploadResult.aiClassification);
 
     if (statusEl) statusEl.textContent = "Salvando respostas...";
 
@@ -1430,7 +1430,22 @@ function buildResultsPerguntasRespostasPfister(imageUrl = null, aiClassification
   return perguntasRespostas;
 }
 
-function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
+function buildAspectoFormalMeta(aiClassification = null) {
+  const cls = aiClassification?.classificacao || {};
+  const p1 = cls.P1 || "";
+  const p2 = cls.P2 || "";
+  const p3 = cls.P3 || "";
+
+  return {
+    status: aiClassification?.ok ? "classificado" : "não classificado",
+    P1: p1,
+    P2: p2,
+    P3: p3,
+    texto: `P1: ${p1};\nP2: ${p2};\nP3: ${p3}.`
+  };
+}
+
+function buildResultsMetaPfister(imageUrl = null, imagePath = null, aiClassification = null) {
   const { byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
@@ -1495,6 +1510,7 @@ function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
       }
     },
     formula_cromatica: formulaCromatica,
+    aspecto_formal: buildAspectoFormalMeta(aiClassification),
     processo_execucao: proc,
     modo_colocacao: {
       p1: buildModoColocacao(1),
