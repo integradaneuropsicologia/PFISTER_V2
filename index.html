@@ -1434,12 +1434,25 @@ function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
   const { byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
+  const colorOrder = [
+    { key: "azul", sigla: "Az", label: "Azul" },
+    { key: "vermelho", sigla: "Vm", label: "Vermelho" },
+    { key: "verde", sigla: "Vd", label: "Verde" },
+    { key: "violeta", sigla: "Vi", label: "Violeta" },
+    { key: "laranja", sigla: "La", label: "Laranja" },
+    { key: "amarelo", sigla: "Am", label: "Amarelo" },
+    { key: "marrom", sigla: "Ma", label: "Marrom" },
+    { key: "preto", sigla: "Pr", label: "Preto" },
+    { key: "branco", sigla: "Br", label: "Branco" },
+    { key: "cinza", sigla: "Ci", label: "Cinza" }
+  ];
   const colorPct = key => round1(byColor[key]?.pct || 0);
-  const colorMeta = (key, sigla, label) => ({
+  const colorMeta = ({ key, sigla, label }) => ({
     sigla,
     label,
     percentual: colorPct(key)
   });
+  const formulaCromatica = buildFormulaCromatica(colorOrder);
 
   const buildModoColocacao = (boardNumber) => {
     const summary = summarizeBoard(boardNumber);
@@ -1458,18 +1471,7 @@ function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
   };
 
   return {
-    porcentagem_cores: {
-      azul: colorMeta("azul", "Az", "Azul"),
-      vermelho: colorMeta("vermelho", "Vm", "Vermelho"),
-      verde: colorMeta("verde", "Vd", "Verde"),
-      violeta: colorMeta("violeta", "Vi", "Violeta"),
-      laranja: colorMeta("laranja", "La", "Laranja"),
-      amarelo: colorMeta("amarelo", "Am", "Amarelo"),
-      marrom: colorMeta("marrom", "Ma", "Marrom"),
-      preto: colorMeta("preto", "Pr", "Preto"),
-      branco: colorMeta("branco", "Br", "Branco"),
-      cinza: colorMeta("cinza", "Ci", "Cinza")
-    },
+    porcentagem_cores: Object.fromEntries(colorOrder.map(color => [color.key, colorMeta(color)])),
     indices: {
       sindrome_normalidade: {
         label: "Síndrome de normalidade",
@@ -1492,6 +1494,7 @@ function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
         percentual: round1(idx.dinamismo_pct)
       }
     },
+    formula_cromatica: formulaCromatica,
     processo_execucao: proc,
     modo_colocacao: {
       p1: buildModoColocacao(1),
@@ -1502,6 +1505,57 @@ function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
       url: imageUrl || "",
       path: imagePath || ""
     }
+  };
+}
+
+function buildFormulaCromatica(colorOrder) {
+  const usage = Object.fromEntries((colorOrder || []).map(color => [
+    color.key,
+    {
+      sigla: color.sigla,
+      label: color.label,
+      piramides: [],
+      quantidade_piramides: 0
+    }
+  ]));
+
+  for (let boardNumber = 1; boardNumber <= 3; boardNumber++) {
+    const usedInBoard = new Set((BOARDS_STATE[boardNumber]?.cells || []).map(cell => cell.key));
+    usedInBoard.forEach(key => {
+      if (!usage[key]) return;
+      usage[key].piramides.push(`P${boardNumber}`);
+      usage[key].quantidade_piramides = usage[key].piramides.length;
+    });
+  }
+
+  const groups = {
+    CA: { label: "Cores constantes", quantidade: 0, cores: [] },
+    CR: { label: "Cores relativamente constantes", quantidade: 0, cores: [] },
+    V: { label: "Cores variáveis", quantidade: 0, cores: [] },
+    AUS: { label: "Cores ausentes", quantidade: 0, cores: [] }
+  };
+
+  Object.values(usage).forEach(color => {
+    const count = color.quantidade_piramides;
+    const item = {
+      sigla: color.sigla,
+      label: color.label,
+      piramides: color.piramides
+    };
+
+    if (count === 3) groups.CA.cores.push(item);
+    else if (count === 2) groups.CR.cores.push(item);
+    else if (count === 1) groups.V.cores.push(item);
+    else groups.AUS.cores.push(item);
+  });
+
+  Object.values(groups).forEach(group => {
+    group.quantidade = group.cores.length;
+  });
+
+  return {
+    formula: `${groups.CA.quantidade} : ${groups.CR.quantidade} : ${groups.V.quantidade} : ${groups.AUS.quantidade}`,
+    componentes: groups
   };
 }
 
