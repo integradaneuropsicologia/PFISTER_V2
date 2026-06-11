@@ -945,6 +945,7 @@ function buildPercentIndices(byColor){
   const estimulo    = round1(pct('vermelho') + pct('amarelo') + pct('laranja'));
   const fria        = round1(pct('azul') + pct('verde') + pct('violeta'));
   const incolor     = round1(pct('preto') + pct('branco') + pct('cinza'));
+  const dinamismo   = round1(pct('verde') + pct('amarelo') + pct('marrom'));
 
   const perColor = {
     pct_branco:  pct('branco'),
@@ -965,6 +966,7 @@ function buildPercentIndices(byColor){
     estimulo,
     fria,
     incolor,
+    dinamismo,
     ...perColor
   };
 
@@ -973,6 +975,7 @@ function buildPercentIndices(byColor){
     estimulo_pct: estimulo,
     fria_pct: fria,
     incolor_pct: incolor,
+    dinamismo_pct: dinamismo,
     ...perColor,
     questions: allResult
   };
@@ -1173,9 +1176,7 @@ async function sendResults() {
     if (statusEl) statusEl.textContent = "Enviando imagem e classificando aspecto formal...";
 
     const uploadResult = await uploadCombinedImageToSupabase(cpf, testCode, submittedAt);
-    const aiClassification = uploadResult.aiClassification;
-    const resultsPayload = buildResultsPerguntasRespostasPfister(uploadResult.imageUrl, aiClassification);
-    const resultsMetaPayload = buildResultsMetaPfister(aiClassification);
+    const resultsMetaPayload = buildResultsMetaPfister(uploadResult.imageUrl, uploadResult.imagePath);
 
     if (statusEl) statusEl.textContent = "Salvando respostas...";
 
@@ -1186,7 +1187,7 @@ async function sendResults() {
           cpf: cpf,
           code: testCode,
           submitted_at: submittedAt,
-          results: resultsPayload,
+          results: "",
           results_meta: resultsMetaPayload,
           image_url: uploadResult.imageUrl,
           image_path: uploadResult.imagePath
@@ -1429,28 +1430,77 @@ function buildResultsPerguntasRespostasPfister(imageUrl = null, aiClassification
   return perguntasRespostas;
 }
 
-function buildResultsMetaPfister(aiClassification = null) {
-  const { total, byColor } = overallColorPercentages();
+function buildResultsMetaPfister(imageUrl = null, imagePath = null) {
+  const { byColor } = overallColorPercentages();
   const idx = buildPercentIndices(byColor);
   const proc = processoExecucao();
-  const conjunto = analiseConjuntoFormal();
+  const colorPct = key => round1(byColor[key]?.pct || 0);
+  const colorMeta = (key, sigla, label) => ({
+    sigla,
+    label,
+    percentual: colorPct(key)
+  });
+
+  const buildModoColocacao = (boardNumber) => {
+    const summary = summarizeBoard(boardNumber);
+    const placement = summary.placement || {};
+    return {
+      label: `Pirâmide ${boardNumber}`,
+      tipo: placement.tipo || "",
+      confianca: round2(placement.confidence || 0),
+      confianca_percentual: Math.round((placement.confidence || 0) * 100),
+      ajustes_trocas: placement.corrections || 0,
+      escores: placement.scores || {},
+      extras: placement.extras || [],
+      ordem_colocacao: placement.sequenceLabels || placementSequenceLabels(boardNumber),
+      requer_revisao_humana: !!placement.requerRevisaoHumana
+    };
+  };
 
   return {
-    total_elementos: total,
-    processo_execucao: proc,
-    conjunto,
-    aspecto_formal_ia: aiClassification,
-    percentuais_cores: byColor,
-    indices: idx,
-    boards: {
-      b1: summarizeBoard(1),
-      b2: summarizeBoard(2),
-      b3: summarizeBoard(3)
+    porcentagem_cores: {
+      azul: colorMeta("azul", "Az", "Azul"),
+      vermelho: colorMeta("vermelho", "Vm", "Vermelho"),
+      verde: colorMeta("verde", "Vd", "Verde"),
+      violeta: colorMeta("violeta", "Vi", "Violeta"),
+      laranja: colorMeta("laranja", "La", "Laranja"),
+      amarelo: colorMeta("amarelo", "Am", "Amarelo"),
+      marrom: colorMeta("marrom", "Ma", "Marrom"),
+      preto: colorMeta("preto", "Pr", "Preto"),
+      branco: colorMeta("branco", "Br", "Branco"),
+      cinza: colorMeta("cinza", "Ci", "Cinza")
     },
-    sequencias: {
-      b1: placementSequenceLabels(1),
-      b2: placementSequenceLabels(2),
-      b3: placementSequenceLabels(3)
+    indices: {
+      sindrome_normalidade: {
+        label: "Síndrome de normalidade",
+        percentual: round1(idx.normalidade_pct)
+      },
+      sindrome_estimulo: {
+        label: "Síndrome de estímulo",
+        percentual: round1(idx.estimulo_pct)
+      },
+      sindrome_fria: {
+        label: "Síndrome fria",
+        percentual: round1(idx.fria_pct)
+      },
+      sindrome_incolor: {
+        label: "Síndrome incolor",
+        percentual: round1(idx.incolor_pct)
+      },
+      sindrome_dinamismo: {
+        label: "Síndrome de dinamismo",
+        percentual: round1(idx.dinamismo_pct)
+      }
+    },
+    processo_execucao: proc,
+    modo_colocacao: {
+      p1: buildModoColocacao(1),
+      p2: buildModoColocacao(2),
+      p3: buildModoColocacao(3)
+    },
+    imagem_tres_piramides: {
+      url: imageUrl || "",
+      path: imagePath || ""
     }
   };
 }
